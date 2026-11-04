@@ -1,0 +1,30 @@
+[project]
+name = "pdf-ectd-tool"
+version = "0.1.0"
+description = "本地 PDF 自动设置工具（eCTD 提交前处理）"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.162.0",
+    "uvicorn==0.54.0",
+    "PyMuPDF==1.26.4",
+    "pikepdf==10.17.0",
+    "python-multipart",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+    "httpx==0.28.1",
+    "playwright==1.64.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "e2e: 浏览器端到端测试（需要 Playwright Chromium）",
+    "slow: 较慢的测试",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]

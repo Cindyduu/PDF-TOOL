@@ -1,0 +1,243 @@
+/* 结果页：九项处理逐行摊开，before / after / counts / reason / next_action 都在。
+ *
+ * 预览失败只提示、不禁用下载：浏览器内嵌 PDF 预览依赖插件，
+ * 有时候明明文件是好的也打不开，这时候拦住下载只会让人以为文件坏了。
+ */
+
+import { badge, formatSize, formatTime, formatValue, html, raw } from '../dom.js';
+
+const TONES = {
+  adjusted: 'ok',
+  unchanged: 'neutral',
+  not_applicable: 'neutral',
+  review_required: 'warn',
+  failed: 'danger',
+};
+
+const JOB_TONES = {
+  completed: 'ok',
+  completed_with_warnings: 'warn',
+  failed: 'danger',
+  interrupted: 'danger',
+};
+
+export async function render(container, ctx) {
+  const jobId = ctx.params.jobId;
+  const meta = ctx.meta;
+  container.innerHTML = html`<p class="muted">正在读取结果…</p>`;
+
+  let report;
+  try {
+    report = await ctx.api.getReport(jobId);
+  } catch (error) {
+    container.innerHTML = html`
+      <section class="card">
+        <h1>打不开处理结果</h1>
+        <p class="error" role="alert">${error.message}</p>
+        <p class="muted">${error.hint}</p>
+        <div class="btn-row"><a class="btn" href="#/history">回到历史</a></div>
+      </section>
+    `;
+    return;
+  }
+
+  const results = report.results || [];
+  const summary = report.summary || {};
+  const output = report.output;
+  const lastError = report.last_error;
+
+  const rows = raw(
+    results
+      .map((item) => {
+        const status = item.status;
+        return html`
+          <tr data-key="${item.key}">
+            <th scope="row">
+              ${item.title}
+              <span class="hint">${item.key}</span>
+            </th>
+            <td>
+              ${badge({
+                icon: item.status_icon || meta.result_status_icons[status] || '•',
+                label: item.status_label || meta.result_status_labels[status] || status,
+                tone: TONES[status] || 'neutral',
+              })}
+            </td>
+            <td>${formatValue(item.before)}</td>
+            <td>${formatValue(item.after)}</td>
+            <td class="small">${formatCounts(item.counts, meta)}</td>
+            <td class="cell-reason">
+              ${item.reason_code ? html`<div>${item.reason_code}</div>` : ''}
+              ${item.message || ''}
+            </td>
+            <td class="small">${item.next_action || '—'}</td>
+          </tr>
+        `;
+      })
+      .join(''),
+  );
+
+  const summaryChips = raw(
+    (meta.result_statuses || [])
+      .map((status) =>
+        badge({
+          icon: meta.result_status_icons[status] || '•',
+          label: `${meta.result_status_labels[status] || status} ${summary[status] ?? 0}`,
+          tone: TONES[status] || 'neutral',
+        }),
+      )
+      .join(' '),
+  );
+
+  const warnings = raw(
+    (report.warnings || []).map((text) => html`<li>${text}</li>`).join(''),
+  );
+
+  container.innerHTML = html`
+    <div class="card-head">
+      <h1>处理结果</h1>
+      ${badge({
+        icon: meta.job_status_icons[report.status] || '•',
+        label: meta.job_status_labels[report.status] || report.status,
+        tone: JOB_TONES[report.status] || 'neutral',
+      })}
+    </div>
+    <p class="muted">${report.original_name}</p>
+
+    ${lastError
+      ? html`
+          <section class="card" id="result-error">
+            <h2>这次没有完成</h2>
+            <p class="error" role="alert">${lastError.message}</p>
+            <dl class="kv small">
+              <dt>原因代码</dt><dd>${lastError.code}</dd>
+              <dt>阶段</dt><dd>${lastError.stage || '—'}</dd>
+              <dt>下一步</dt><dd>${lastError.next_action || '—'}</dd>
+            </dl>
+          </section>
+        `
+      : ''}
+
+    <section class="card">
+      <h2>汇总</h2>
+      <ul class="summary">${summaryChips}</ul>
+      <dl class="kv small">
+        <dt>文件</dt><dd>${report.original_name}</dd>
+        <dt>页数</dt><dd>${report.source?.page_count ?? '—'} 页</dd>
+        <dt>开始</dt><dd>${formatTime(report.started_at)}</dd>
+        <dt>结束</dt><dd>${formatTime(report.finished_at)}</dd>
+        <dt>输出文件</dt><dd>${output ? output.file_name : '尚未生成'}</dd>
+        <dt>输出大小</dt><dd>${output ? formatSize(output.size) : '—'}</dd>
+        <dt>最终校验</dt><dd>${output?.verified ? '已通过' : '未通过或未执行'}</dd>
+      </dl>
+    </section>
+
+    <section class="card">
+      <div class="btn-row">
+        ${output
+          ? html`<a
+              class="btn btn-primary"
+              id="download-output"
+              href="${ctx.api.fileUrl(jobId, 'output')}"
+              download="${output.file_name}"
+              >下载处理后的 PDF</a
+            >`
+          : html`<span class="btn" id="download-output" aria-disabled="true"
+              >暂无可下载的输出文件</span
+            >`}
+        <button type="button" class="btn" id="preview-output">在页面内预览</button>
+        <button type="button" class="btn" id="reprocess">按原配置重新处理</button>
+        <a class="btn" href="#/history">回到历史</a>
+      </div>
+      <p id="preview-notice" class="notice" aria-live="polite"></p>
+      <div id="preview-area"></div>
+      <p id="result-action-error" class="error" role="alert"></p>
+    </section>
+
+    <section class="card">
+      <h2>九项处理明细</h2>
+      <div class="table-wrap">
+        <table id="result-table">
+          <caption class="visually-hidden">
+            九项处理的逐项结果
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">处理项</th>
+              <th scope="col">结果</th>
+              <th scope="col">处理前</th>
+              <th scope="col">处理后</th>
+              <th scope="col">计数</th>
+              <th scope="col">原因</th>
+              <th scope="col">下一步</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    ${report.warnings?.length
+      ? html`
+          <section class="card">
+            <h2>需要留意</h2>
+            <ul id="warnings">${warnings}</ul>
+          </section>
+        `
+      : ''}
+
+    <p class="hint" id="disclaimer">${report.disclaimer || ''}</p>
+  `;
+
+  const previewButton = container.querySelector('#preview-output');
+  const previewArea = container.querySelector('#preview-area');
+  const previewNotice = container.querySelector('#preview-notice');
+  const reprocessButton = container.querySelector('#reprocess');
+  const actionError = container.querySelector('#result-action-error');
+
+  previewButton.addEventListener('click', async () => {
+    previewNotice.textContent = '';
+    actionError.textContent = '';
+    previewButton.disabled = true;
+    const url = ctx.api.fileUrl(jobId, 'output');
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      // 只要确认文件读得到，就把渲染交给浏览器；内容不必在 JS 里留一份
+      await response.body?.cancel?.();
+      previewArea.innerHTML = raw(
+        `<iframe class="preview-frame" title="输出文件预览" src="${url}"></iframe>`,
+      );
+    } catch (error) {
+      previewArea.innerHTML = '';
+      previewNotice.textContent =
+        '页面内预览打不开（文件可能已被移动，或浏览器不支持内嵌 PDF），但下载不受影响。';
+    } finally {
+      previewButton.disabled = false;
+    }
+  });
+
+  reprocessButton.addEventListener('click', async () => {
+    actionError.textContent = '';
+    reprocessButton.disabled = true;
+    try {
+      const fresh = await ctx.api.reprocess(jobId);
+      ctx.toast('已按原配置新建任务');
+      ctx.navigate(`#/config/${fresh.id}`);
+    } catch (error) {
+      actionError.textContent = [error.message, error.hint].filter(Boolean).join('｜');
+    } finally {
+      reprocessButton.disabled = false;
+    }
+  });
+}
+
+function formatCounts(counts, meta) {
+  if (!counts) return '—';
+  const parts = (meta.count_keys || [])
+    .filter((key) => Number(counts[key]) > 0)
+    .map((key) => `${meta.count_labels[key] || key} ${counts[key]}`);
+  return parts.length ? parts.join('，') : '—';
+}
