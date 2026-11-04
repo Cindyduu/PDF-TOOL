@@ -9,6 +9,7 @@
 export const ROUTES = [
   { name: 'home', pattern: /^\/home\/?$/ },
   { name: 'config', pattern: /^\/config\/([^/]+)\/?$/, keys: ['jobId'] },
+  { name: 'batch', pattern: /^\/batch\/([^/]+)\/?$/, keys: ['batchId'] },
   { name: 'processing', pattern: /^\/processing\/([^/]+)\/?$/, keys: ['jobId'] },
   { name: 'result', pattern: /^\/result\/([^/]+)\/?$/, keys: ['jobId'] },
   { name: 'history', pattern: /^\/history\/?$/ },

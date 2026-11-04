@@ -25,6 +25,10 @@ class Limits:
     """各类硬性限额。恢复包校验与上传校验共用这里的数值。"""
 
     max_upload_bytes: int = 200 * 1024 * 1024
+    # 批量上传一次最多几个文件。定 20 不是随手取的：
+    # 每个任务都要独立解析标签与页数，一次上百个会让"上传"这一步长时间无响应；
+    # 20 个足够覆盖"一批同类报告"的真实场景，又能保证失败提示是明确的一次性拒绝。
+    max_batch_files: int = 20
     max_pages: int = 5000
     max_zip_entries: int = 20_000
     max_zip_total_bytes: int = 8 * 1024**3

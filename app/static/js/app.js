@@ -8,16 +8,18 @@ import { api } from './api.js';
 import { el, html } from './dom.js';
 import { createRouter, navigate } from './router.js';
 import * as backup from './views/backup.js';
+import * as batch from './views/batch.js';
 import * as config from './views/config.js';
 import * as history from './views/history.js';
 import * as home from './views/home.js';
 import * as processing from './views/processing.js';
 import * as result from './views/result.js';
 
-const VIEWS = { home, config, processing, result, history, backup };
+const VIEWS = { home, config, batch, processing, result, history, backup };
 const TITLES = {
   home: '上传文件',
   config: '处理配置',
+  batch: '批量处理',
   processing: '处理中',
   result: '处理结果',
   history: '历史记录',

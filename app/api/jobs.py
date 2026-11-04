@@ -3,7 +3,8 @@
 设计约束：
 - 只做协议层的事：取参数、调服务、把 AppError 交给全局处理器；
 - 所有阻塞 IO 端点用同步函数（FastAPI 会放进线程池），不占用事件循环；
-- 一次只接受一个文件，多文件直接拒绝，避免"处理了半个批次"的模糊状态；
+- `POST /api/jobs` 只接受一个文件（多文件直接拒绝，保持既有语义）；
+  批量走 `POST /api/jobs/batch`，两者互不影响；
 - 下载端点只吐出**已通过最终验证**的文件，没就绪一律 409，文件没了 404。
 """
 
@@ -72,14 +73,76 @@ def create_job(
         upload.file.close()
 
 
+@router.post("/batch", status_code=201)
+def create_batch(
+    request: Request,
+    files: list[UploadFile] | None = File(default=None),
+) -> dict:
+    """批量上传：一次最多 `max_batch_files` 个文件，逐个建任务。
+
+    与单文件端点 `POST /api/jobs` 的关键差别：这里**接受多文件**，
+    并且单个文件失败不拖垮整批 —— 坏文件进 `rejected`，好文件照常建任务。
+    """
+    ctx = _ctx(request)
+    uploads = [item for item in (files or []) if item is not None]
+
+    if not uploads:
+        raise AppError(
+            ErrorCode.EMPTY_FILE,
+            "没有收到文件",
+            retryable=False,
+            next_action=NEXT_ACTION_PICK_FILE,
+            http_status=400,
+        )
+
+    items = [(item.filename or "document.pdf", item.file) for item in uploads]
+    try:
+        return ctx.jobs.create_batch(items)
+    finally:
+        for item in uploads:
+            item.file.close()
+
+
+@router.get("/batch/{batch_id}")
+def get_batch(batch_id: str, request: Request) -> dict:
+    """批次详情：完整任务对象，供批次页渲染表格与轮询进度。"""
+    ctx = _ctx(request)
+    jobs = ctx.jobs.batch_jobs(batch_id)
+    return {"batch_id": batch_id, "total": len(jobs), "jobs": jobs}
+
+
+@router.patch("/batch/{batch_id}/config")
+def update_batch_config(
+    batch_id: str, patch: ConfigPatch, request: Request
+) -> dict:
+    provided = patch.model_fields_set
+    exempt_raw = (
+        (patch.exempt_pages_raw or "") if "exempt_pages_raw" in provided else None
+    )
+    return _ctx(request).jobs.apply_batch_config(
+        batch_id,
+        exempt_pages_raw=exempt_raw,
+        tag_choice=patch.tag_choice,
+        tag_choice_provided="tag_choice" in provided,
+    )
+
+
+@router.post("/batch/{batch_id}/start")
+def start_batch(batch_id: str, request: Request) -> dict:
+    return _ctx(request).jobs.start_batch(batch_id)
+
+
 @router.get("")
 def list_jobs(
     request: Request,
     q: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    batch_id: str | None = Query(default=None),
 ) -> dict:
     """历史列表。`q` 按文件名/任务号模糊匹配，`status` 精确匹配状态。"""
-    return _ctx(request).history.list_jobs(query=q, status=status)
+    return _ctx(request).history.list_jobs(
+        query=q, status=status, batch_id=batch_id
+    )
 
 
 @router.get("/{job_id}")

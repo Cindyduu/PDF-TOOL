@@ -28,7 +28,14 @@ from app.config import APP_NAME, APP_VERSION, SCHEMA_VERSION
 from app.core import atomic, state_machine
 from app.core.naming import build_output_name
 from app.core.pagespec import parse_page_spec
-from app.core.storage import new_job_id, utcnow_iso, validate_id, PREFIX_JOB
+from app.core.storage import (
+    PREFIX_BATCH,
+    PREFIX_JOB,
+    new_batch_id,
+    new_job_id,
+    utcnow_iso,
+    validate_id,
+)
 from app.errors import AppError, ErrorCode
 from app.pdf.inspector import inspect_pdf
 from app.pdf.tags.detect import detect_tags
@@ -151,7 +158,11 @@ class JobService:
             tmp.unlink(missing_ok=True)
 
     # ---- 创建 -----------------------------------------------------------
-    def create_job(self, filename: str, stream: BinaryIO) -> dict[str, Any]:
+    def create_job(
+        self, filename: str, stream: BinaryIO, batch_id: str | None = None
+    ) -> dict[str, Any]:
+        if batch_id is not None:
+            validate_id(batch_id, PREFIX_BATCH)
         generation_id = self.ctx.generation_id
         job_id = new_job_id()
         directory = self.storage.job_dir(generation_id, job_id, create=True)
@@ -190,6 +201,7 @@ class JobService:
                 "results": [],
                 "last_error": None,
                 "generation_id": generation_id,
+                "batch_id": batch_id,
             }
             self._write_job(job)
             return job
@@ -202,6 +214,146 @@ class JobService:
         from app.core.naming import sanitize_filename
 
         return sanitize_filename(filename or "document.pdf")
+
+    # ---- 批次 -----------------------------------------------------------
+    def create_batch(self, items: list[tuple[str, BinaryIO]]) -> dict[str, Any]:
+        """把一批上传文件逐个建成任务，共享一个 `batch_id`。
+
+        设计要点（决定了这里的错误处理方式）：
+
+        - **单个文件失败不拖垮整批**：坏文件进 `rejected`，好文件照常建任务。
+          批量场景里一个文件坏了就整批退回，等于让用户重传 19 个没问题的文件。
+        - **全部失败才抛错**：整批都没建成时不能返回 201，否则前端会跳到一个
+          空批次页。此时把第一条失败原因抬成整批的错误码，细节里带全量清单。
+        - 上限检查在**建任何任务之前**做，磁盘上不留半批目录。
+        """
+        limit = self.limits.max_batch_files
+        if len(items) > limit:
+            raise AppError(
+                ErrorCode.TOO_MANY_FILES,
+                f"一次最多处理 {limit} 个文件",
+                details={"count": len(items), "limit": limit},
+                retryable=False,
+                next_action=f"请分批上传，每批不超过 {limit} 个文件",
+                http_status=400,
+            )
+
+        batch_id = new_batch_id()
+        jobs: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+
+        for filename, stream in items:
+            try:
+                jobs.append(self.create_job(filename, stream, batch_id=batch_id))
+            except AppError as exc:
+                rejected.append(
+                    {
+                        "name": self._safe_name(filename),
+                        "code": exc.code,
+                        "message": exc.message,
+                        "next_action": exc.next_action,
+                    }
+                )
+
+        if not jobs:
+            first = rejected[0]
+            raise AppError(
+                first["code"],
+                "这一批文件都没能加入处理队列",
+                details={"rejected": rejected, "rejected_count": len(rejected)},
+                retryable=False,
+                next_action=first["next_action"],
+                http_status=400,
+            )
+
+        return {"batch_id": batch_id, "jobs": jobs, "rejected": rejected}
+
+    def batch_jobs(self, batch_id: str) -> list[dict[str, Any]]:
+        """按 `batch_id` 收集任务，按创建时间正序（与上传顺序一致）。
+
+        直接扫 job.json 而不是查 index：索引是可重建的缓存，
+        批次页拿到的是"现在到底是什么状态"，不能吃缓存。
+        """
+        validate_id(batch_id, PREFIX_BATCH)
+        jobs: list[dict[str, Any]] = []
+        for job_id in self.storage.list_job_ids(self.ctx.generation_id):
+            job = atomic.read_json(self._job_path(job_id), default=None)
+            if isinstance(job, dict) and job.get("batch_id") == batch_id:
+                jobs.append(job)
+        if not jobs:
+            raise AppError(
+                ErrorCode.JOB_NOT_FOUND,
+                "批次不存在或已被删除",
+                details={"batch_id": batch_id},
+                next_action="请回到首页重新上传文件",
+                http_status=404,
+            )
+        jobs.sort(key=lambda item: (item.get("created_at") or "", item["id"]))
+        return jobs
+
+    def apply_batch_config(
+        self,
+        batch_id: str,
+        *,
+        exempt_pages_raw: str | None = None,
+        tag_choice: str | None = None,
+        tag_choice_provided: bool = False,
+    ) -> dict[str, Any]:
+        """把同一份配置套到整批任务上。
+
+        各文件页数不同，同一个豁免页字符串在 A 文件合法、在 B 文件可能越界，
+        所以必须逐个走 `update_config` 的校验：越界的进 `invalid`，
+        绝不把非法页码写进配置。
+        """
+        jobs = self.batch_jobs(batch_id)
+        updated: list[str] = []
+        invalid: list[dict[str, Any]] = []
+        for job in jobs:
+            try:
+                self.update_config(
+                    job["id"],
+                    exempt_pages_raw=exempt_pages_raw,
+                    tag_choice=tag_choice,
+                    tag_choice_provided=tag_choice_provided,
+                )
+                updated.append(job["id"])
+            except AppError as exc:
+                invalid.append(
+                    {
+                        "id": job["id"],
+                        "name": job.get("original_name"),
+                        "code": exc.code,
+                        "message": exc.message,
+                        "next_action": exc.next_action,
+                    }
+                )
+        return {"batch_id": batch_id, "updated": updated, "invalid": invalid}
+
+    def start_batch(self, batch_id: str) -> dict[str, Any]:
+        """逐个校验并入队，能开始的开始，不能开始的列进 `skipped`。
+
+        这里刻意不做"有一个不合法就整批不动"：批量处理的目的是省事，
+        为了一个页数少的文件把另外 19 个也卡住，用户只能手动一个个点。
+        """
+        jobs = self.batch_jobs(batch_id)
+        started: list[str] = []
+        skipped: list[dict[str, Any]] = []
+        for job in jobs:
+            try:
+                fresh = self.assert_startable(job["id"])
+                self.enqueue(fresh)
+                started.append(job["id"])
+            except AppError as exc:
+                skipped.append(
+                    {
+                        "id": job["id"],
+                        "name": job.get("original_name"),
+                        "code": exc.code,
+                        "message": exc.message,
+                        "next_action": exc.next_action,
+                    }
+                )
+        return {"batch_id": batch_id, "started": started, "skipped": skipped}
 
     # ---- 读取 -----------------------------------------------------------
     def get_job(self, job_id: str) -> dict[str, Any]:

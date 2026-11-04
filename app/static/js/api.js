@@ -86,6 +86,31 @@ export const api = {
     return request('/api/jobs', { method: 'POST', body: form });
   },
 
+  /** 批量上传：一次多个文件，返回 { batch_id, jobs, rejected }。 */
+  createBatch(files) {
+    const form = new FormData();
+    Array.from(files || []).forEach((file) => form.append('files', file));
+    return request('/api/jobs/batch', { method: 'POST', body: form });
+  },
+
+  getBatch(batchId) {
+    return request(`/api/jobs/batch/${encodeURIComponent(batchId)}`);
+  },
+
+  patchBatchConfig(batchId, patch) {
+    return request(`/api/jobs/batch/${encodeURIComponent(batchId)}/config`, {
+      method: 'PATCH',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(patch),
+    });
+  },
+
+  startBatch(batchId) {
+    return request(`/api/jobs/batch/${encodeURIComponent(batchId)}/start`, {
+      method: 'POST',
+    });
+  },
+
   listJobs(params) {
     return request(`/api/jobs${buildQuery(params)}`);
   },

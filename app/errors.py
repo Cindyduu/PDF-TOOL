@@ -15,6 +15,7 @@ class ErrorCode:
     FILE_TOO_LARGE = "file_too_large"
     EMPTY_FILE = "empty_file"
     MULTIPLE_FILES = "multiple_files"
+    TOO_MANY_FILES = "too_many_files"
     ENCRYPTED_PDF = "encrypted_pdf"
     SIGNED_PDF = "signed_pdf"
     CORRUPT_PDF = "corrupt_pdf"

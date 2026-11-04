@@ -156,6 +156,9 @@ def create_app(
             "tag_status_labels": TAG_STATUS_LABELS,
             "tag_choices": list(TAG_CHOICES),
             "tag_choice_labels": TAG_CHOICE_LABELS,
+            # 批量上限来自后端配置：界面提示的数字必须和真正生效的校验一致，
+            # 否则用户按界面提示选 20 个却被告知"最多 10 个"。
+            "max_batch_files": settings.limits.max_batch_files,
         }
 
     # ---- 业务路由（后续阶段注册） ---------------------------------------

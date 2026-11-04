@@ -24,11 +24,14 @@ from app.config import BACKUP_FORMAT_VERSION, SCHEMA_VERSION, Settings
 from app.core import atomic
 from app.errors import AppError, ErrorCode, PathTraversalError
 
-_ID_RE = re.compile(r"^(gen|job|bak)-[0-9A-Za-z][0-9A-Za-z-]{2,63}$")
+_ID_RE = re.compile(r"^(gen|job|bak|bat)-[0-9A-Za-z][0-9A-Za-z-]{2,63}$")
 
 PREFIX_GENERATION = "gen"
 PREFIX_JOB = "job"
 PREFIX_BACKUP = "bak"
+# 批次不是目录，只是写进各任务 job.json 的归属标记。
+# 单独给它一个前缀，是为了让日志和 URL 里一眼能分出"这是批次不是任务"。
+PREFIX_BATCH = "bat"
 
 
 def utcnow_iso() -> str:
@@ -62,6 +65,10 @@ def new_generation_id(moment: datetime | None = None) -> str:
 
 def new_job_id() -> str:
     return f"{PREFIX_JOB}-{secrets.token_hex(8)}"
+
+
+def new_batch_id() -> str:
+    return f"{PREFIX_BATCH}-{secrets.token_hex(8)}"
 
 
 def new_backup_id(moment: datetime | None = None) -> str:
@@ -299,6 +306,7 @@ class Storage:
                     "id": job.get("id", job_id),
                     "original_name": job.get("original_name", ""),
                     "status": job.get("status", "failed"),
+                    "batch_id": job.get("batch_id"),
                     "created_at": job.get("created_at"),
                     "finished_at": job.get("finished_at"),
                     "output_name": output_name,

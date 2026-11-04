@@ -1,15 +1,22 @@
-/* 首页：拖放或点击选择 PDF。
+/* 首页：拖放或点击选择 PDF，支持一次多个。
  *
  * 拖放区本身是个 role="button" + tabindex="0" 的容器：键盘用户按回车/空格
  * 也能打开选择框，不用先找到隐藏的 input。
+ *
+ * 选 1 个走老的"单个配置页"，选多个进批次页——单个文件是最高频的场景，
+ * 不该为了批量把它的步骤变长。
  */
 
 import { html } from '../dom.js';
 
 export function render(container, ctx) {
+  const limit = Number(ctx.meta?.max_batch_files) || 20;
+
   container.innerHTML = html`
     <h1>上传 PDF 文件</h1>
-    <p class="muted">一次处理一个文件。文件只保存在本机目录里，不会上传到外部服务。</p>
+    <p class="muted">
+      可以一次选择多个文件批量处理，也可以只选一个。文件只保存在本机目录里，不会上传到外部服务。
+    </p>
 
     <section class="card">
       <div
@@ -22,13 +29,16 @@ export function render(container, ctx) {
       >
         <strong>把 PDF 拖到这里</strong>
         <p class="muted">或者按回车键选择文件</p>
-        <p id="dropzone-hint" class="hint">只接受单个 PDF 文件，扩展名 .pdf</p>
+        <p id="dropzone-hint" class="hint">
+          只接受 PDF 文件，扩展名 .pdf；一次最多 ${limit} 个
+        </p>
       </div>
       <input
         id="file-input"
         class="visually-hidden"
         type="file"
         accept="application/pdf,.pdf"
+        multiple
         tabindex="-1"
         aria-hidden="true"
       />
@@ -51,11 +61,16 @@ export function render(container, ctx) {
     errorBox.textContent = '';
   }
 
+  function setBusy(value) {
+    busy = value;
+    if (value) dropzone.setAttribute('aria-busy', 'true');
+    else dropzone.removeAttribute('aria-busy');
+  }
+
   async function upload(file) {
     if (busy || !file) return;
     clearError();
-    busy = true;
-    dropzone.setAttribute('aria-busy', 'true');
+    setBusy(true);
     status.textContent = `正在读取并检查「${file.name}」…`;
 
     try {
@@ -67,8 +82,31 @@ export function render(container, ctx) {
       status.textContent = '';
       showError(error.message, error.hint);
     } finally {
-      busy = false;
-      dropzone.removeAttribute('aria-busy');
+      setBusy(false);
+      input.value = '';
+    }
+  }
+
+  async function uploadBatch(files) {
+    if (busy || !files.length) return;
+    clearError();
+    setBusy(true);
+    status.textContent = `正在读取并检查 ${files.length} 个文件…`;
+
+    try {
+      const payload = await ctx.api.createBatch(files);
+      const accepted = (payload.jobs || []).length;
+      const rejected = (payload.rejected || []).length;
+      status.textContent = rejected
+        ? `已接收 ${accepted} 个文件，${rejected} 个未通过检查`
+        : `已接收 ${accepted} 个文件`;
+      ctx.toast(rejected ? `${rejected} 个文件未通过检查` : '文件已上传');
+      ctx.navigate(`#/batch/${payload.batch_id}`);
+    } catch (error) {
+      status.textContent = '';
+      showError(error.message, error.hint);
+    } finally {
+      setBusy(false);
       input.value = '';
     }
   }
@@ -76,10 +114,15 @@ export function render(container, ctx) {
   function pickFiles(fileList) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
-    if (files.length > 1) {
-      ctx.toast('一次只能处理一个文件，已选择第一个');
+    if (files.length > limit) {
+      showError(
+        `一次最多 ${limit} 个文件`,
+        `这次选了 ${files.length} 个，请分批上传`,
+      );
+      return;
     }
-    upload(files[0]);
+    if (files.length === 1) upload(files[0]);
+    else uploadBatch(files);
   }
 
   dropzone.addEventListener('click', () => {

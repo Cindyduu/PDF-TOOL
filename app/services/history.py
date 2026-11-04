@@ -57,9 +57,13 @@ class HistoryService:
         return entries
 
     def list_jobs(
-        self, *, query: str | None = None, status: str | None = None
+        self,
+        *,
+        query: str | None = None,
+        status: str | None = None,
+        batch_id: str | None = None,
     ) -> dict[str, Any]:
-        """搜索 + 状态筛选。
+        """搜索 + 状态筛选 + 批次筛选。
 
         `total` 是筛选前的总数，`count` 是筛选后的条数——界面用它显示
         「3 / 12 条」，也方便测试确认筛选真的起了作用。
@@ -78,6 +82,9 @@ class HistoryService:
 
         if status:
             entries = [entry for entry in entries if entry.get("status") == status]
+
+        if batch_id:
+            entries = [entry for entry in entries if entry.get("batch_id") == batch_id]
 
         needle = (query or "").strip().lower()
         if needle:

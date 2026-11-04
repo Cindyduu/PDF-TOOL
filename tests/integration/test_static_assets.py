@@ -6,7 +6,7 @@
   因为这台机器可能完全离线，`python run.py` 起来就得能用；
 - `index.html` 只引用本地 `/static/` 资源，且没有内联脚本（便于将来收紧 CSP）；
 - 无障碍骨架在位：跳过链接、`main[tabindex]`、`aria-live` 区、恰好三项顶部导航；
-- 六个视图模块都导出 `render(container, ctx)`，路由表恰好六条且与视图一一对应。
+- 七个视图模块都导出 `render(container, ctx)`，路由表与视图一一对应。
 """
 
 from __future__ import annotations
@@ -28,13 +28,14 @@ REQUIRED_FILES = [
     "js/app.js",
     "js/views/home.js",
     "js/views/config.js",
+    "js/views/batch.js",
     "js/views/processing.js",
     "js/views/result.js",
     "js/views/history.js",
     "js/views/backup.js",
 ]
 
-VIEW_NAMES = ["home", "config", "processing", "result", "history", "backup"]
+VIEW_NAMES = ["home", "config", "batch", "processing", "result", "history", "backup"]
 
 TEXT_SUFFIXES = {".html", ".css", ".js"}
 
@@ -155,13 +156,14 @@ def test_top_nav_has_exactly_three_items() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_router_declares_the_six_hash_routes() -> None:
+def test_router_declares_the_hash_routes() -> None:
     source = read("js/router.js")
     names = re.findall(r"name:\s*'([a-z_]+)'", source)
     assert names == VIEW_NAMES, f"路由表与计划不一致：{names}"
 
-    # 带 id 的路由必须解析出 jobId 参数。
+    # 带 id 的路由必须解析出参数：三个任务级路由 + 一个批次级路由。
     assert source.count("keys: ['jobId']") == 3
+    assert source.count("keys: ['batchId']") == 1
 
 
 @pytest.mark.parametrize("view", VIEW_NAMES)
