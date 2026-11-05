@@ -154,6 +154,34 @@ def test_result_rows_carry_before_after_counts_reason_and_next_action(
         assert cells[0].query_selector(".badge .icon") is not None
 
 
+def test_result_shows_initial_view_audit_with_acrobat_wording(page, live_server, fixture_pdfs):
+    """用户是拿 Acrobat 三个下拉框验收的，页面上必须有能逐字对号的对照。"""
+    run_to_result(page, live_server, fixture_pdfs / PDF_NAME)
+
+    card = page.query_selector("#view-audit")
+    assert card is not None, "结果页缺少「初始视图核对」卡片"
+
+    rows = page.query_selector_all("#view-audit tbody tr[data-view]")
+    assert [row.get_attribute("data-view") for row in rows] == [
+        "bookmark_panel",
+        "initial_layout",
+        "initial_zoom",
+    ]
+
+    text = card.inner_text()
+    # Acrobat 口径的目标值必须出现，否则用户还是对不上号
+    assert "书签面板和页面" in text
+    assert "默认" in text
+
+    for row in rows:
+        cells = row.query_selector_all("td")
+        assert len(cells) == 3  # 第一列是 th（项目名）
+        assert cells[0].inner_text().strip() != "—", "处理后必须给出 Acrobat 文字"
+        raw = cells[1].inner_text().strip()
+        assert "→" in raw and raw != "→", f"原始键值列缺内容：{raw!r}"
+        assert cells[2].inner_text().strip() in ("已调整", "已符合")
+
+
 # --------------------------------------------------------------------------- #
 # 刷新与历史导航
 # --------------------------------------------------------------------------- #

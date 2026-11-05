@@ -26,8 +26,11 @@ def test_page_layout_is_removed(fixture_pdfs):
 
         assert outcome.status == "adjusted"
         assert outcome.reason_code == "page_layout_removed"
-        assert outcome.before == {"page_layout": "/TwoColumnLeft"}
-        assert outcome.after == {"page_layout": None}
+        assert outcome.before == {
+            "page_layout": "/TwoColumnLeft",
+            "page_layout_label": "双联连续（奇数页在左）",
+        }
+        assert outcome.after == {"page_layout": None, "page_layout_label": "默认"}
         assert outcome.counts == {
             "checked": 1,
             "modified": 1,
@@ -68,8 +71,20 @@ def test_destination_open_action_is_removed(fixture_pdfs):
 
         assert outcome.status == "adjusted"
         assert outcome.reason_code == "open_action_removed"
-        assert outcome.before == {"open_action": "dest_array"}
-        assert outcome.after == {"open_action": None}
+        assert outcome.before == {
+            "open_action": "dest_array",
+            "fit_type": "/XYZ",
+            "open_page": 1,
+            "zoom": 2.0,
+            "zoom_label": "200%",
+        }
+        assert outcome.after == {
+            "open_action": None,
+            "fit_type": None,
+            "open_page": None,
+            "zoom": None,
+            "zoom_label": "默认",
+        }
         assert pdf.Root.get("/OpenAction") is None
 
 
@@ -91,7 +106,9 @@ def test_named_dest_open_action_is_removed():
 
     outcome = initial_view.process_initial_zoom(pdf, OpContext.build(pdf))
 
-    assert outcome.before == {"open_action": "named_dest"}
+    assert outcome.before["open_action"] == "named_dest"
+    assert outcome.before["open_page"] == 1
+    assert outcome.before["zoom_label"] == "200%"
     assert outcome.counts["modified"] == 1
     assert pdf.Root.get("/OpenAction") is None
 
@@ -104,7 +121,8 @@ def test_goto_open_action_is_removed():
 
     outcome = initial_view.process_initial_zoom(pdf, OpContext.build(pdf))
 
-    assert outcome.before == {"open_action": "goto"}
+    assert outcome.before["open_action"] == "goto"
+    assert outcome.before["open_page"] == 1
     assert outcome.counts["modified"] == 1
     assert pdf.Root.get("/OpenAction") is None
 
@@ -140,8 +158,16 @@ def test_page_mode_is_set_to_use_outlines(fixture_pdfs):
 
         assert outcome.status == "adjusted"
         assert outcome.reason_code == "page_mode_set"
-        assert outcome.before == {"page_mode": "/UseNone", "has_outline": True}
-        assert outcome.after == {"page_mode": "/UseOutlines", "has_outline": True}
+        assert outcome.before == {
+            "page_mode": "/UseNone",
+            "page_mode_label": "仅页面",
+            "has_outline": True,
+        }
+        assert outcome.after == {
+            "page_mode": "/UseOutlines",
+            "page_mode_label": "书签面板和页面",
+            "has_outline": True,
+        }
         assert str(pdf.Root.PageMode) == "/UseOutlines"
         assert outcome.warnings == []
         assert outcome.next_action is None

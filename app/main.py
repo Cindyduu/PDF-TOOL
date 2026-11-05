@@ -134,6 +134,7 @@ def create_app(
             TAG_STATUS_LABELS,
             TAG_STATUSES,
         )
+        from app.pdf import view_labels
         from app.services.jobs import DISCLAIMER
 
         return {
@@ -159,6 +160,9 @@ def create_app(
             # 批量上限来自后端配置：界面提示的数字必须和真正生效的校验一致，
             # 否则用户按界面提示选 20 个却被告知"最多 10 个"。
             "max_batch_files": settings.limits.max_batch_files,
+            # 初始视图三项的 Acrobat 口径文字。放在这里而不是前端各写一份：
+            # 两份表迟早分叉，分叉的那天用户就又要"在 Acrobat 里对不上号"了。
+            "view_labels": view_labels.meta_payload(),
         }
 
     # ---- 业务路由（后续阶段注册） ---------------------------------------

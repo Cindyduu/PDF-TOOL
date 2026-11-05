@@ -93,6 +93,8 @@ export async function render(container, ctx) {
     (report.warnings || []).map((text) => html`<li>${text}</li>`).join(''),
   );
 
+  const viewAudit = buildViewAudit(results, meta);
+
   container.innerHTML = html`
     <div class="card-head">
       <h1>处理结果</h1>
@@ -153,6 +155,8 @@ export async function render(container, ctx) {
       <div id="preview-area"></div>
       <p id="result-action-error" class="error" role="alert"></p>
     </section>
+
+    ${viewAudit}
 
     <section class="card">
       <h2>九项处理明细</h2>
@@ -240,4 +244,75 @@ function formatCounts(counts, meta) {
     .filter((key) => Number(counts[key]) > 0)
     .map((key) => `${meta.count_labels[key] || key} ${counts[key]}`);
   return parts.length ? parts.join('，') : '—';
+}
+
+/* 「初始视图核对」卡片。
+ *
+ * 存在的理由：用户是拿 Acrobat 的「文档属性 → 初始视图」三个下拉框来验收的，
+ * 而表格里的 `page_mode: /UseOutlines` 在 Acrobat 里根本没有对应文字。
+ * 这里把两边并排放：左边是 Acrobat 里会看到的字，右边是 PDF 里的原始键值，
+ * 对不上时一眼能看出是"工具没改"还是"改的和你以为的不是同一个键"。
+ *
+ * 只在三项都有结果时显示——缺项时并排对照会误导。
+ */
+const VIEW_ROWS = [
+  { key: 'bookmark_panel', title: '导览标签', field: 'page_mode', label: 'page_mode_label' },
+  { key: 'initial_layout', title: '页面布局', field: 'page_layout', label: 'page_layout_label' },
+  { key: 'initial_zoom', title: '放大率', field: 'open_action', label: 'zoom_label' },
+];
+
+function buildViewAudit(results, meta) {
+  const byKey = new Map((results || []).map((item) => [item.key, item]));
+  if (!VIEW_ROWS.every((row) => byKey.has(row.key))) return '';
+
+  const rows = VIEW_ROWS.map((row) => {
+    const item = byKey.get(row.key);
+    const shown = item.after?.[row.label] ?? '—';
+    const changed = item.status === 'adjusted';
+    return html`
+      <tr data-view="${row.key}">
+        <th scope="row">${row.title}</th>
+        <td class="small">${shown}</td>
+        <td class="small">${rawView(item, row)}</td>
+        <td>${changed ? '已调整' : '已符合'}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const targets = meta.view_labels?.targets || {};
+  return html`
+    <section class="card" id="view-audit">
+      <h2>初始视图核对</h2>
+      <p class="muted">
+        左边是你在 Acrobat「文档属性 → 初始视图」里会看到的文字，可以直接对号；
+        右边是文件里真正的键值。目标值：导览标签 ${targets.page_mode || '书签面板和页面'}、
+        页面布局 ${targets.page_layout || '默认'}、放大率 ${targets.zoom || '默认'}。
+      </p>
+      <div class="table-wrap">
+        <table>
+          <caption class="visually-hidden">初始视图三项与 Acrobat 显示文字的对照</caption>
+          <thead>
+            <tr>
+              <th scope="col">项目</th>
+              <th scope="col">Acrobat 显示（处理后）</th>
+              <th scope="col">原始键值（处理前 → 处理后）</th>
+              <th scope="col">结论</th>
+            </tr>
+          </thead>
+          <tbody>${raw(rows)}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function rawView(item, row) {
+  const show = (value) => (value === null || value === undefined ? '（无）' : String(value));
+  if (row.key !== 'initial_zoom') {
+    return `${show(item.before?.[row.field])} → ${show(item.after?.[row.field])}`;
+  }
+  // 放大率没有单一键：打开动作的形态、fit 类型、缩放因子三者一起才说得清
+  const one = (view) =>
+    `${show(view?.open_action)}｜fit=${show(view?.fit_type)}｜zoom=${show(view?.zoom)}`;
+  return `${one(item.before)} → ${one(item.after)}`;
 }
