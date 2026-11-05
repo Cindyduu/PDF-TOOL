@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pikepdf
 import pytest
-from pikepdf import Array, Name, String
+from pikepdf import Array, Dictionary, Name, String
 
 from app.pdf import bookmarks
 from app.pdf.pipeline import run_pipeline
@@ -143,6 +143,64 @@ def test_shared_named_target_signature_is_unchanged(tmp_path):
     with pikepdf.open(tmp_path / "out.pdf") as pdf:
         after = object_signature(pdf, pdf.Root.Names.Dests.Names[1])
     assert after == before, "共享命名目标被就地改写，等于改了所有引用方"
+
+
+def test_action_based_bookmark_is_converted_in_place(tmp_path):
+    """书签目的地也可以挂在 `/A` 动作里，而不是 `/Dest` 键上。
+
+    真实样本 `附录16-2-8…-71.pdf` 就是这种形状：`/A {/S /GoTo, /D [页 /FitBH 595]}`。
+    这条路径此前没有任何测试覆盖——`dest_slot()` 的 `/A` 分支一旦退化，
+    动作式书签会静默落进「不适用」，而所有 `/Dest` 用例照样全绿。
+
+    要点：改的是动作字典里的 `/D`，不能新建一个 `/Dest` 把动作架空。
+    """
+    pdf = new_pdf()
+    pages = [add_page(pdf) for _ in range(2)]
+    build_outline(
+        pdf,
+        [
+            {
+                "title": "FitBH-action",
+                "action": Dictionary(S=Name("/GoTo"), D=Array([pages[0], Name("/FitBH"), 595])),
+            },
+            {
+                "title": "XYZ-zoom-action",
+                "action": Dictionary(S=Name("/GoTo"), D=Array([pages[1], Name("/XYZ"), 100, 700, 2.0])),
+            },
+        ],
+    )
+    source = save(pdf, tmp_path / "src.pdf")
+
+    result = run_pipeline(source, tmp_path / "out.pdf")
+    item = result.result_for("bookmarks_inherit_zoom")
+    assert item["counts"]["checked"] == 2
+    assert item["counts"]["modified"] == 2
+    assert item["counts"]["not_applicable"] == 0, "动作式目的地被当成没有目的地了"
+    assert item["reason_code"] == "fit_converted"
+
+    with pikepdf.open(tmp_path / "out.pdf") as out:
+        nodes = {str(node.get("/Title")): node for node in bookmarks.iter_outline_items(out)}
+        assert len(nodes) == 2
+
+        for title in nodes:
+            assert "/Dest" not in nodes[title], f"{title} 被挪到 /Dest，原动作成了空壳"
+            action = nodes[title].get("/A")
+            assert isinstance(action, Dictionary)
+            assert str(action.get("/S")) == "/GoTo"
+
+        # /FitBH 595 的纵向位置必须搬过来，否则书签跳过去会停在页顶
+        fitbh = nodes["FitBH-action"].get("/A").get("/D")
+        assert str(fitbh[1]) == "/XYZ"
+        assert fitbh[2] is None
+        assert float(fitbh[3]) == 595
+        assert fitbh[4] is None
+
+        # /XYZ 带显式缩放 2.0：位置保留，缩放清空
+        xyz = nodes["XYZ-zoom-action"].get("/A").get("/D")
+        assert str(xyz[1]) == "/XYZ"
+        assert float(xyz[2]) == 100
+        assert float(xyz[3]) == 700
+        assert xyz[4] is None
 
 
 def test_second_pass_is_idempotent(tmp_path):
