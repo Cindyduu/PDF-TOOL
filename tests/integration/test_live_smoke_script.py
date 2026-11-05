@@ -24,6 +24,17 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "live_smoke.py"
 
 
+@pytest.fixture(scope="module")
+def smoke():
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    spec = spec_from_file_location("live_smoke_script_under_test", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -113,16 +124,9 @@ def test_script_reports_missing_file(tmp_path):
         (["--tag", "skip"], "标签：skip"),
     ],
 )
-def test_script_argument_parsing(args, expect):
+def test_script_argument_parsing(smoke, args, expect):
     """中文逗号也要认——用户从文档里复制粘贴时很容易带上全角逗号。"""
-    from importlib.util import module_from_spec, spec_from_file_location
-
-    spec = spec_from_file_location("live_smoke_args", SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    parsed = module.parse_args(["某文件.pdf", *args])
+    parsed = smoke.parse_args(["某文件.pdf", *args])
     assert parsed.pdf == "某文件.pdf"
     if expect.startswith("豁免页"):
         # parse_args 只做字符串解析，逗号归一化在 main() 里，这里直接验归一化结果
@@ -131,3 +135,56 @@ def test_script_argument_parsing(args, expect):
         assert f"豁免页：{pages}" == expect
     else:
         assert f"标签：{parsed.tag}" == expect
+
+
+# --------------------------------------------------------------------------- #
+# --exe：同一套独立校验也要能验打包产物
+# --------------------------------------------------------------------------- #
+
+
+def test_build_command_runs_run_py_in_source_mode(smoke, tmp_path):
+    """源码态必须用当前解释器跑 `run.py`，否则验的是别的 Python。"""
+    command = smoke.build_command(None, port=8899, var_dir=tmp_path / "var")
+
+    assert command[:2] == [sys.executable, "run.py"]
+    assert "--no-browser" in command
+    assert command[command.index("--port") + 1] == "8899"
+    assert command[command.index("--var-dir") + 1] == str(tmp_path / "var")
+
+
+def test_build_command_runs_exe_when_given(smoke, tmp_path):
+    """打包产物自带解释器：前面不能再拼 `sys.executable` 和 `run.py`。
+
+    拼错了的表现是「测试通过了」，其实跑的还是源码，打包产物一次都没被验过。
+    """
+    exe = tmp_path / "PDFTool.exe"
+    command = smoke.build_command(exe, port=8899, var_dir=tmp_path / "var")
+
+    assert command[0] == str(exe)
+    assert sys.executable not in command
+    assert "run.py" not in command
+    assert command[command.index("--port") + 1] == "8899"
+
+
+def test_script_reports_missing_exe(tmp_path):
+    """`--exe` 指向不存在的文件时要给人话，而不是抛 FileNotFoundError。"""
+    source = build_source(tmp_path / "样本.pdf")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            str(source),
+            "--exe",
+            str(tmp_path / "没有这个.exe"),
+            "--port",
+            str(free_port()),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+        timeout=120,
+    )
+
+    assert result.returncode == 2
+    assert "可执行文件不存在" in (result.stdout + result.stderr)

@@ -7,6 +7,7 @@
     python scripts/live_smoke.py 某份真实文件.pdf          # 用外部文件
     python scripts/live_smoke.py 某份真实文件.pdf --exempt 1,2 --tag keep
     python scripts/live_smoke.py 某份真实文件.pdf --keep-output  # 留下产物
+    python scripts/live_smoke.py 某份真实文件.pdf --exe dist/PDFTool/PDFTool.exe  # 验打包产物
 
 **校验不读应用自己写的报告**：报告说「改好了」不算数，必须重新打开下载下来的
 那份文件，用 pikepdf 逐条检查书签/链接的目的地是不是 `[页 /XYZ l t null]`。
@@ -333,6 +334,16 @@ def check_output(source: Path, output: Path, *, exempt: list[int]) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 
+def build_command(exe: Path | None, *, port: int, var_dir: Path) -> list[str]:
+    """拼出启动命令。
+
+    打包后的 exe 自带解释器，不能再拿 `sys.executable` 去跑 `run.py`；
+    源码态则必须用当前解释器，否则测的是别的 Python。
+    """
+    head = [str(exe)] if exe is not None else [sys.executable, "run.py"]
+    return [*head, "--no-browser", "--port", str(port), "--var-dir", str(var_dir)]
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="起真实服务跑一遍完整流程，并独立校验产物",
@@ -365,6 +376,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="配合 --keep-output 指定产物路径，默认输出到当前目录的 <文件名>_smoke.pdf",
     )
+    parser.add_argument(
+        "--exe",
+        default="",
+        help="改成启动打包后的 PDFTool.exe（验证打包产物），不填则直接跑 run.py",
+    )
     return parser.parse_args(argv)
 
 
@@ -375,12 +391,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"文件不存在：{source}", file=sys.stderr)
         return 2
 
+    exe = Path(args.exe).expanduser().resolve() if args.exe else None
+    if exe is not None and not exe.is_file():
+        print(f"可执行文件不存在：{exe}", file=sys.stderr)
+        return 2
+
     exempt = [int(part) for part in args.exempt.replace("，", ",").split(",") if part.strip()]
     port = args.port
     base = f"http://127.0.0.1:{port}"
     var_dir = Path(tempfile.mkdtemp(prefix="pdftool-smoke-"))
+    cwd = exe.parent if exe is not None else ROOT
 
     print(f"源文件：{source}（{source.stat().st_size} 字节）")
+    print(f"启动方式：{exe.name if exe is not None else 'run.py（源码态）'}")
     print(f"豁免页：{exempt or '无'} | 标签：{args.tag} | 端口：{port}")
 
     # 服务端日志必须落到文件，不能用 PIPE 挂着不读：
@@ -389,8 +412,8 @@ def main(argv: list[str] | None = None) -> int:
     log_path = var_dir / "server.log"
     log_file = log_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(
-        [sys.executable, "run.py", "--no-browser", "--port", str(port), "--var-dir", str(var_dir)],
-        cwd=str(ROOT),
+        build_command(exe, port=port, var_dir=var_dir),
+        cwd=str(cwd),
         stdout=log_file,
         stderr=subprocess.STDOUT,
         text=True,
