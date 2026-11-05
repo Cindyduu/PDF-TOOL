@@ -21,9 +21,15 @@ htmlcov/
 
 # ---- PyInstaller 打包产物 ----
 build/
-dist/
+# dist 下只有交付用的 dist/PDFTool 入库，其余构建中间产物照旧忽略
+dist/*
+!dist/PDFTool/
 var-exe/
 *.spec.bak
+
+# 打包产物里的运行时数据（用户上传件、历史任务、日志）不入库：
+# 这些是使用过程中产生的，跟着仓库走既撑大体积，也可能带出用户文档内容
+dist/PDFTool/var/
 
 # ---- 运行时数据 ----
 var/

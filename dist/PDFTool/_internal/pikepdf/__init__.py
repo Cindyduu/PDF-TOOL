@@ -1,0 +1,325 @@
+# SPDX-FileCopyrightText: 2022 James R. Barlow
+# SPDX-License-Identifier: MPL-2.0
+
+"""A library for manipulating PDFs."""
+
+# isort:skip_file
+
+from __future__ import annotations
+
+
+# start delvewheel patch
+def _delvewheel_patch_1_13_1():
+    import os
+    if os.path.isdir(libs_dir := os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, 'pikepdf.libs'))):
+        os.add_dll_directory(libs_dir)
+
+
+_delvewheel_patch_1_13_1()
+del _delvewheel_patch_1_13_1
+# end delvewheel patch
+
+from typing import TYPE_CHECKING
+
+from pikepdf._version import __version__
+
+try:
+    from pikepdf import _core
+except ImportError as _e:  # pragma: no cover
+    import sys as _sys
+    import sysconfig as _sysconfig
+
+    _lines = [
+        "pikepdf's extension library (pikepdf._core) failed to import.",
+        f"  Python:     {_sys.version.splitlines()[0]}",
+        f"  Executable: {_sys.executable}",
+        f"  Platform:   {_sys.platform}",
+    ]
+    if _sysconfig.get_config_var("Py_GIL_DISABLED"):
+        _lines.append(
+            "  This is a free-threaded (GIL-disabled) interpreter; pikepdf does "
+            "not publish free-threaded wheels, so the extension must be compiled "
+            "from source for it."
+        )
+    if _sys.platform == "win32":
+        _lines.append(
+            "  On Windows this usually means the Microsoft Visual C++ "
+            "Redistributable (x64) is missing, or a different/incompatible "
+            "Python interpreter is on PATH than the one pikepdf was installed "
+            "into. Verify with `where python` and `py -0p` that the terminal "
+            "uses the same interpreter shown above, and install the latest "
+            "x64 VC++ Redistributable."
+        )
+    _lines.append(f"  Underlying error: {_e}")
+    raise ImportError("\n".join(_lines)) from _e
+
+from pikepdf._core import (
+    AccessMode,
+    AcroForm,
+    AcroFormField,
+    Annotation,
+    AnnotationFlag,
+    AttachedFileSpec,
+    ContentStreamInlineImage,
+    ContentStreamInstruction,
+    DataDecodingError,
+    DeletedObjectError,
+    ForeignObjectError,
+    FormFieldFlag,
+    Job,
+    JobUsageError,
+    JSONStreamData,
+    Matrix,
+    NameTree,
+    NumberTree,
+    ObjectHelper,
+    ObjectSet,
+    ObjectStreamMode,
+    Page,
+    PasswordError,
+    Pdf,
+    PdfError,
+    PikepdfError,
+    QpdfRuntimeError,
+    Rectangle,
+    ReferenceCycleError,
+    StreamDecodeLevel,
+    StreamParser,
+    Token,
+    TokenFilter,
+    TokenType,
+    XrefEntry,
+)
+from pikepdf.exceptions import (
+    DependencyError,
+    PageCopyWarning,
+    HifiPrintImageNotTranscodableError,
+    InvalidPdfImageError,
+    NotExtractableError,
+    OutlineStructureError,
+    PikepdfWarning,
+    UnsupportedImageTypeError,
+    XmpTypeWarning,
+)
+from pikepdf.objects import (
+    Array,
+    Boolean,
+    Dictionary,
+    Integer,
+    Name,
+    NamePath,
+    Object,
+    ObjectType,
+    Operator,
+    Real,
+    Stream,
+    String,
+)
+from pikepdf.models import (
+    Action,
+    Destination,
+    Encryption,
+    GoToAction,
+    GoToDpAction,
+    GoToEAction,
+    GoToRAction,
+    JavaScriptAction,
+    LaunchAction,
+    NamedAction,
+    Outline,
+    OutlineItem,
+    OutlineItemFlag,
+    PageLocation,
+    PdfImage,
+    PdfInlineImage,
+    Permissions,
+    SetOCGStateAction,
+    URIAction,
+    make_page_destination,
+    parse_content_stream,
+    unparse_content_stream,
+)
+
+from pikepdf.models.ctm import (
+    get_objects_with_ctm,
+)
+
+from pikepdf.jobs import JobBuilder
+from pikepdf._content_scopes import ContentScope, ContentScopeKind
+from pikepdf._page_copy import (
+    PageCopyResult,
+)
+
+
+# Importing these will monkeypatch classes defined in C++ and register a new
+# pdfdoc codec
+# While _cpphelpers is intended to be called from our C++ code only, explicitly
+# importing helps introspection tools like PyInstaller figure out that the module
+# is necessary.
+from pikepdf import _cpphelpers, _methods, codec  # noqa: F401, F841
+from pikepdf import settings
+from pikepdf import exceptions
+from pikepdf import models
+from pikepdf import sanitize
+
+__libqpdf_version__: str = _core.qpdf_version()
+
+from pikepdf._explicit_conv import (
+    explicit_conversion,
+    implicit_conversion,
+    get_object_conversion_mode,
+    set_object_conversion_mode,
+)
+from pikepdf._core import (
+    as_bool,
+    as_bytes,
+    as_decimal,
+    as_dict,
+    as_float,
+    as_int,
+    as_list,
+    as_str,
+    unbox,
+)
+
+# Provide pikepdf.{open, new} -> pikepdf.Pdf.{open, new}
+open = Pdf.open  # pylint: disable=redefined-builtin
+new = Pdf.new
+
+# Exclude .open, .new here from to make sure from pikepdf import * does not clobber
+# builtins.open()
+# Exclude codec, objects, jbig2 because we import the interesting bits from them
+# directly to here.
+_exclude_from__all__ = {'open', 'new', 'codec', 'objects', 'jbig2'}
+
+__all__ = [
+    '__libqpdf_version__',
+    '__version__',
+    'AccessMode',
+    'AcroForm',
+    'AcroFormField',
+    'Action',
+    'Annotation',
+    'AnnotationFlag',
+    'Array',
+    'AttachedFileSpec',
+    'Boolean',
+    'ContentScope',
+    'ContentScopeKind',
+    'ContentStreamInlineImage',
+    'ContentStreamInstruction',
+    'DataDecodingError',
+    'Destination',
+    'GoToAction',
+    'GoToDpAction',
+    'GoToEAction',
+    'GoToRAction',
+    'JavaScriptAction',
+    'LaunchAction',
+    'NamedAction',
+    'SetOCGStateAction',
+    'URIAction',
+    'DecompressionBombError',
+    'DecompressionBombWarning',
+    'DeletedObjectError',
+    'DependencyError',
+    'Dictionary',
+    'Encryption',
+    'exceptions',
+    'explicit_conversion',
+    'implicit_conversion',
+    'unbox',
+    'as_bool',
+    'as_bytes',
+    'as_decimal',
+    'as_dict',
+    'as_float',
+    'as_int',
+    'as_list',
+    'as_str',
+    'ForeignObjectError',
+    'FormFieldFlag',
+    'get_object_conversion_mode',
+    'get_objects_with_ctm',
+    'HifiPrintImageNotTranscodableError',
+    'Integer',
+    'InvalidPdfImageError',
+    'Job',
+    'JobBuilder',
+    'JobUsageError',
+    'NotExtractableError',
+    'JSONStreamData',
+    'make_page_destination',
+    'Matrix',
+    'models',
+    'Name',
+    'NamePath',
+    'NameTree',
+    'NumberTree',
+    'Object',
+    'ObjectHelper',
+    'ObjectSet',
+    'ObjectStreamMode',
+    'ObjectType',
+    'Operator',
+    'Outline',
+    'OutlineItem',
+    'OutlineItemFlag',
+    'OutlineStructureError',
+    'Page',
+    'PageCopyResult',
+    'PageCopyWarning',
+    'PageLocation',
+    'parse_content_stream',
+    'PasswordError',
+    'Pdf',
+    'PdfError',
+    'PikepdfError',
+    'PikepdfWarning',
+    'QpdfRuntimeError',
+    'XmpTypeWarning',
+    'PdfImage',
+    'PdfInlineImage',
+    'Permissions',
+    'Real',
+    'Rectangle',
+    'ReferenceCycleError',
+    'sanitize',
+    'set_object_conversion_mode',
+    'settings',
+    'Stream',
+    'StreamDecodeLevel',
+    'StreamParser',
+    'String',
+    'Token',
+    'TokenFilter',
+    'TokenType',
+    'unparse_content_stream',
+    'UnsupportedImageTypeError',
+    'XrefEntry',
+]
+
+if TYPE_CHECKING:
+    from pikepdf.models.image import (
+        DecompressionBombError,
+        DecompressionBombWarning,
+    )
+
+
+def __getattr__(name: str):
+    """Lazily expose Pillow-derived exceptions and optional submodules.
+
+    Keeps ``import pikepdf`` free of Pillow (see tests/test_lazy_load.py) while
+    still allowing ``pikepdf.DecompressionBombError`` to be referenced.
+    ``pikepdf.pdfa`` needs optional dependencies, so it is only imported when
+    first accessed.
+    """
+    if name in ('DecompressionBombError', 'DecompressionBombWarning'):
+        from pikepdf.models import image
+
+        return getattr(image, name)
+    if name == 'pdfa':
+        import importlib
+
+        return importlib.import_module('pikepdf.pdfa')
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
