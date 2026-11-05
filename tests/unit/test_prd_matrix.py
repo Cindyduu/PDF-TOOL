@@ -1,7 +1,7 @@
 """阶段 A：PRD 与验收基线的一致性检查。
 
 这些测试不检查实现，只检查 PRD 本身是否构成一个无歧义的验收基线：
-- 十项需求 R1–R10 都有编号、都有正常验收和异常验收；
+- 十一项需求 R1–R11 都有编号、都有正常验收和异常验收；
 - 九项处理操作键齐全且顺序固定；
 - 五种结果状态齐全；
 - 不出现「完全合规」这类结论性表述（只允许出现在禁止性语句中）；
@@ -42,7 +42,7 @@ TASK_STATUSES = [
     "interrupted",
 ]
 
-REQUIREMENT_IDS = [f"R{i}" for i in range(1, 11)]
+REQUIREMENT_IDS = [f"R{i}" for i in range(1, 12)]
 
 
 @pytest.fixture(scope="module")
