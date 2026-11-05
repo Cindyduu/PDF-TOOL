@@ -61,8 +61,18 @@ def test_uri_and_named_and_internal_links_are_separated(fixture_pdfs):
             "not_applicable": 1,
             "failed": 0,
         }
-        assert outcome.before == {"links": 3, "internal": 2, "explicit_zoom": 2}
-        assert outcome.after == {"links": 3, "internal": 2, "explicit_zoom": 0}
+        assert outcome.before == {
+            "links": 3,
+            "internal": 2,
+            "explicit_zoom": 2,
+            "fit_breakdown": {"/XYZ": 2},
+        }
+        assert outcome.after == {
+            "links": 3,
+            "internal": 2,
+            "explicit_zoom": 0,
+            "fit_breakdown": {"/XYZ": 2},
+        }
 
         # URI 链接的动作原样保留
         uri_annot = next(
@@ -200,7 +210,8 @@ def test_link_count_is_preserved_after_processing(fixture_pdfs):
         assert before == after == 3
 
 
-def test_fit_link_destination_is_not_applicable():
+def test_fit_link_destination_is_converted_to_inherit():
+    """`/FitH` 链接没有缩放位，必须换类型并保留纵向位置。"""
     pdf = new_pdf()
     p1 = add_page(pdf)
     p2 = add_page(pdf)
@@ -215,8 +226,13 @@ def test_fit_link_destination_is_not_applicable():
 
     outcome = links.process(pdf, OpContext.build(pdf))
 
-    assert outcome.counts["not_applicable"] == 1
-    assert len(link.Dest) == 3
+    assert outcome.counts["not_applicable"] == 0
+    assert outcome.counts["modified"] == 1
+    assert outcome.reason_code == "fit_converted"
+    assert str(link.Dest[1]) == "/XYZ"
+    assert link.Dest[2] is None
+    assert float(link.Dest[3]) == 700, "/FitH 的纵向位置必须保留"
+    assert link.Dest[4] is None
 
 
 def test_dangling_named_target_is_failed():

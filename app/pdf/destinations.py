@@ -13,6 +13,26 @@
 改写规则只有一条：**绝不原地修改可能被共享的目标对象**。
 共享对象（命名目标，或间接对象）一律复制一份再改，把复制品写回槽位；
 豁免方仍然指向原件，因此一个字节都不受影响。
+
+## 为什么必须换类型而不是删参数
+
+PDF 的页面目的地有 8 种 fit 类型，但只有 `/XYZ` 的第 5 项是缩放因子：
+
+| 类型    | 参数            | 有缩放位？ |
+|---------|-----------------|-----------|
+| `/XYZ`  | 左 上 缩放      | 有        |
+| `/Fit`  | —               | 无        |
+| `/FitH` | 上              | 无        |
+| `/FitV` | 左              | 无        |
+| `/FitR` | 左 下 右 上     | 无        |
+| `/FitB` | —               | 无        |
+| `/FitBH`| 上              | 无        |
+| `/FitBV`| 左              | 无        |
+
+「承前缩放」在文件里只有一种等价写法：`[页 /XYZ 左 上 null]`。
+所以 `/Fit`、`/FitR` 这类目标**必须换类型**，把能保留的位置参数搬到
+`/XYZ` 的「左」「上」槽位，其余补 `null`。第一版把这些目标记成
+「不适用」整批跳过，是把「没有缩放位」误当成了「不用改」。
 """
 
 from __future__ import annotations
@@ -25,16 +45,43 @@ from pikepdf import Array, Dictionary, Name, String
 
 __all__ = [
     "XYZ",
+    "FIT_LABELS",
+    "UNKNOWN_FIT",
+    "UNKNOWN_FIT_LABEL",
     "PageResolver",
     "ResolvedDest",
     "collect_named_dests",
+    "fit_breakdown",
+    "fit_name",
     "resolve_dest",
+    "to_inherit_xyz",
+    "write_dest",
     "write_inherit_zoom",
 ]
 
 XYZ = "/XYZ"
 
 _MAX_TREE_DEPTH = 32
+
+# Acrobat「缩放比率」下拉框里对每种目的地的称呼，供报告文案使用。
+FIT_LABELS: dict[str, str] = {
+    XYZ: "指定位置与缩放",
+    "/Fit": "适合页面",
+    "/FitH": "适合宽度",
+    "/FitV": "适合高度",
+    "/FitB": "适合可见区域",
+    "/FitBH": "适合可见宽度",
+    "/FitBV": "适合可见高度",
+    "/FitR": "适合矩形区域",
+}
+
+UNKNOWN_FIT = "unknown"
+UNKNOWN_FIT_LABEL = "未知目标类型"
+
+
+def fit_name(fit_type: str | None) -> str:
+    """fit 类型 → Acrobat 中文称呼；未知值降级，绝不抛异常。"""
+    return FIT_LABELS.get(fit_type or "", UNKNOWN_FIT_LABEL)
 
 
 class PageResolver:
@@ -115,6 +162,16 @@ class ResolvedDest:
         except AttributeError:  # pragma: no cover - 防御
             return True
 
+    @property
+    def fit_label(self) -> str:
+        """Acrobat 口径的中文称呼；未知类型降级不抛异常。"""
+        return fit_name(self.fit_type)
+
+    @property
+    def already_inherit(self) -> bool:
+        """是否已经是承前缩放：只有 `/XYZ` 且缩放位为 `null` 才算。"""
+        return self.fit_type == XYZ and self.zoom is None
+
 
 def _is_name_ref(value: Any) -> bool:
     return isinstance(value, (String, Name))
@@ -156,15 +213,91 @@ def resolve_dest(
 def write_inherit_zoom(slot: Any, key: str, resolved: ResolvedDest) -> str:
     """把承前缩放写回槽位。返回 `"copied"` 或 `"in_place"`。
 
-    - 共享目标：复制一份改完写回槽位，原件保持不动；
-    - 独占目标：直接改数组第 5 项。
+    旧入口，保留为薄封装；新代码直接用 :func:`write_dest`。
     """
-    if resolved.zoom_index is None:  # pragma: no cover - 调用方已过滤
-        raise ValueError("目标不是 /XYZ 类型，没有缩放因子可改")
+    return write_dest(slot, key, to_inherit_xyz(resolved), resolved)
+
+
+# --------------------------------------------------------------------------- #
+# 目标改写：任意 fit 类型 → 承前缩放
+# --------------------------------------------------------------------------- #
+
+
+def _at(array: Any, index: int) -> Any:
+    """越界取参数返回 None：真实文档里 `[p /FitH]` 这种半截数组并不罕见。"""
+    try:
+        return array[index] if len(array) > index else None
+    except (TypeError, KeyError):  # pragma: no cover - 防御
+        return None
+
+
+def _position(resolved: ResolvedDest) -> tuple[Any, Any]:
+    """挑出能保留的位置语义，返回 `(左, 上)`。
+
+    - `/XYZ` 两个都保留；
+    - `/FitH`、`/FitBH` 只有纵向（上）；
+    - `/FitV`、`/FitBV` 只有横向（左）；
+    - `/Fit`、`/FitB`、`/FitR` 没有可搬的单值位置，全丢（`/FitR` 的矩形另行计数）。
+    """
+    fit = resolved.fit_type
+    array = resolved.array
+    if fit == XYZ:
+        return _at(array, 2), _at(array, 3)
+    if fit in ("/FitV", "/FitBV"):
+        return _at(array, 2), None
+    if fit in ("/FitH", "/FitBH"):
+        return None, _at(array, 2)
+    return None, None
+
+
+def to_inherit_xyz(resolved: ResolvedDest) -> Array:
+    """构造 `[页 /XYZ 左 上 null]`。
+
+    第 0 项**原样搬运**：可能是页对象引用，也可能是少数老文档用的 0 基页序号，
+    换掉它等于把书签跳到别的页。
+    """
+    left, top = _position(resolved)
+    return Array([resolved.array[0], Name(XYZ), left, top, None])
+
+
+def write_dest(slot: Any, key: str, array: Array, resolved: ResolvedDest) -> str:
+    """把改写后的目标写回槽位。返回 `"copied"` 或 `"in_place"`。
+
+    - 共享目标（命名目标 / 间接对象）：写回新数组，原件保持不动；
+    - 独占目标：就地替换数组内容，不新建对象。
+    """
     if resolved.shared:
-        duplicate = Array(list(resolved.array))
-        duplicate[resolved.zoom_index] = None
-        slot[Name(key)] = duplicate
+        slot[Name(key)] = array
         return "copied"
-    resolved.array[resolved.zoom_index] = None
+    _replace_contents(resolved.array, array)
     return "in_place"
+
+
+def _replace_contents(target: Any, source: Any) -> None:
+    """就地替换数组内容：长度对齐后逐项写入。
+
+    pikepdf 的 `Array` 不支持整体赋值，只能 `pop` / `append` / 按索引写。
+    """
+    items = list(source)
+    while len(target) > len(items):
+        target.pop()
+    for index, value in enumerate(items):
+        if index < len(target):
+            target[index] = value
+        else:
+            target.append(value)
+
+
+def fit_breakdown(items: list[Any], slot_getter: Any, ctx: Any) -> dict[str, int]:
+    """统计各 fit 类型的条数，用于 before/after 实测值。"""
+    breakdown: dict[str, int] = {}
+    for item in items:
+        slot, key = slot_getter(item)
+        if slot is None:
+            continue
+        resolved = resolve_dest(slot[key], ctx.named, ctx.resolver)
+        if resolved is None:
+            continue
+        fit = resolved.fit_type or UNKNOWN_FIT
+        breakdown[fit] = breakdown.get(fit, 0) + 1
+    return breakdown

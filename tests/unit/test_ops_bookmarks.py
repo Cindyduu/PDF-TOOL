@@ -4,7 +4,8 @@
 1. 显式缩放必须被改成 `null`；
 2. 豁免按**目标页**判定，不是按书签挂在哪；
 3. 共享目标只能复制后再改，原件一个字节都不许动；
-4. `/Fit` 之类没有缩放语义的目的地不许乱动。
+4. `/Fit` 之类没有缩放位的目的地必须**换类型**改成 `/XYZ` + null，
+   不能像第一版那样整批跳过。
 """
 
 from __future__ import annotations
@@ -40,8 +41,16 @@ def test_explicit_zoom_is_replaced_with_inherit(fixture_pdfs):
             "not_applicable": 0,
             "failed": 0,
         }
-        assert outcome.before == {"bookmarks": 3, "explicit_zoom": 3}
-        assert outcome.after == {"bookmarks": 3, "explicit_zoom": 0}
+        assert outcome.before == {
+            "bookmarks": 3,
+            "explicit_zoom": 3,
+            "fit_breakdown": {"/XYZ": 3},
+        }
+        assert outcome.after == {
+            "bookmarks": 3,
+            "explicit_zoom": 0,
+            "fit_breakdown": {"/XYZ": 3},
+        }
         assert outcome.changed is True
 
         # 落地效果：每一项的第 5 项必须是 null，且目标页没变
@@ -151,8 +160,12 @@ def test_shared_named_dest_is_not_touched_when_only_exempt_refs():
     assert p1 is not None
 
 
-def test_fit_destination_is_not_applicable(fixture_pdfs):
-    """`/Fit` 没有缩放倍数，改它会连带改滚动位置，只能跳过。"""
+def test_fit_destination_is_converted_to_inherit():
+    """`/Fit` 没有缩放位，必须换类型改写成 `[页 /XYZ null null null]`。
+
+    第一版把这类目标记成「不适用」跳过，用户要求「全部承前缩放」却一条没改；
+    这里钉住的是改写结果，不只是计数。
+    """
     pdf = new_pdf()
     p1 = add_page(pdf)
     p2 = add_page(pdf)
@@ -165,14 +178,21 @@ def test_fit_destination_is_not_applicable(fixture_pdfs):
     )
     outcome = bookmarks.process(pdf, _ctx(pdf))
 
-    assert outcome.counts["not_applicable"] == 1
-    assert outcome.counts["modified"] == 1
+    assert outcome.counts["not_applicable"] == 0
+    assert outcome.counts["modified"] == 2
+    assert outcome.reason_code == "fit_converted"
+    assert outcome.before["fit_breakdown"] == {"/Fit": 1, "/XYZ": 1}
+    assert outcome.after["fit_breakdown"] == {"/XYZ": 2}
+
     fit_item = next(
         item
         for item in bookmarks.iter_outline_items(pdf)
         if str(item.get("/Title")) == "Fit"
     )
-    assert len(fit_item.Dest) == 2, "/Fit 目的地的长度不许被改"
+    assert str(fit_item.Dest[1]) == "/XYZ"
+    assert len(fit_item.Dest) == 5, "/Fit 必须补齐成 5 项 /XYZ 目标"
+    assert fit_item.Dest[2] is None and fit_item.Dest[3] is None
+    assert fit_item.Dest[4] is None
 
 
 def test_goto_action_destination_is_handled():
