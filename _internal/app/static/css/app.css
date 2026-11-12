@@ -617,3 +617,54 @@ td.cell-reason {
 .field-error:empty {
   display: none;
 }
+
+/* ---- 勾选清单：准备页的十二项校验、处理页的六组处理项 ----
+ *
+ * 用 fieldset + 每行 .option 拼出来，行间加分隔线而不是给每行做卡片：
+ * 九行卡片会把一屏塞满，勾选这件事本身并不需要那么多视觉重量。
+ */
+.checklist {
+  margin: 12px 0 0;
+  padding: 2px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-alt);
+}
+
+.checklist .option + .option {
+  border-top: 1px solid var(--border);
+}
+
+.checklist .option:last-child {
+  border-bottom: none;
+}
+
+/* 危险提示：与普通 .hint 同字号，但用警示色——不可逆的操作必须看得出来 */
+.hint.danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* ---- 每文件一块：校验结果页与处理结果页共用 ----
+ *
+ * 这两页都是一屏里排 N 个文件，文件之间的间隔比卡片自身的内外边距更重要，
+ * 否则用户会分不清哪一行属于哪个文件。
+ */
+.verify-file .card-head h2 {
+  font-size: 16px;
+  margin: 0;
+  word-break: break-all;
+}
+
+.verify-file > .table-wrap {
+  margin-top: 12px;
+}
+
+.verify-file > .btn-row {
+  margin-top: 12px;
+}
+
+.verify-file .preview-frame {
+  margin-top: 12px;
+}
+

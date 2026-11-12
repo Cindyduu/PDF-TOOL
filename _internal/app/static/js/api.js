@@ -80,13 +80,6 @@ export const api = {
     return metaPromise;
   },
 
-  createJob(file) {
-    const form = new FormData();
-    form.append('files', file);
-    return request('/api/jobs', { method: 'POST', body: form });
-  },
-
-  /** 批量上传：一次多个文件，返回 { batch_id, jobs, rejected }。 */
   createBatch(files) {
     const form = new FormData();
     Array.from(files || []).forEach((file) => form.append('files', file));
@@ -111,6 +104,51 @@ export const api = {
     });
   },
 
+  /**
+   * 提交前置校验（R13）。
+   *
+   * `patch` 一起带上准备页勾的 `verify_items` / `skip_precheck`：页面 1 上
+   * 「勾选 → 点校验」是一个动作，拆成两个请求会让"勾了但没保存"静默丢配置。
+   */
+  verifyBatch(batchId, patch) {
+    return request(`/api/jobs/batch/${encodeURIComponent(batchId)}/verify`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(patch || {}),
+    });
+  },
+
+  /** 批次校验汇总（§8.4）。phase 取 precheck / post。 */
+  getBatchVerifyReport(batchId, phase = 'precheck') {
+    return request(
+      `/api/jobs/batch/${encodeURIComponent(batchId)}/verify-report${buildQuery({ phase })}`,
+    );
+  },
+
+  /** 页面 4 的数据源：整批的处理结果 + 后置校验结果。 */
+  getBatchResults(batchId) {
+    return request(`/api/jobs/batch/${encodeURIComponent(batchId)}/results`);
+  },
+
+  // ---- 导出端点：只拼 URL，交给浏览器去下载/新窗口打开 ----
+  batchVerifyReportHtmlUrl(batchId, phase = 'post') {
+    return (
+      `/api/jobs/batch/${encodeURIComponent(batchId)}/verify-report.html` +
+      buildQuery({ phase })
+    );
+  },
+
+  jobVerifyReportHtmlUrl(jobId, phase = 'post') {
+    return (
+      `/api/jobs/${encodeURIComponent(jobId)}/verify-report.html` +
+      buildQuery({ phase })
+    );
+  },
+
+  batchProcessLogHtmlUrl(batchId) {
+    return `/api/jobs/batch/${encodeURIComponent(batchId)}/process-log.html`;
+  },
+
   listJobs(params) {
     return request(`/api/jobs${buildQuery(params)}`);
   },
@@ -124,12 +162,6 @@ export const api = {
       method: 'PATCH',
       headers: JSON_HEADERS,
       body: JSON.stringify(patch),
-    });
-  },
-
-  retryTagDetection(jobId) {
-    return request(`/api/jobs/${encodeURIComponent(jobId)}/tag-detection/retry`, {
-      method: 'POST',
     });
   },
 

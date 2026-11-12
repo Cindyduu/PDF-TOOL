@@ -2,5 +2,22 @@
 # 而且可能含真实业务文件，绝对不要入库。
 var/
 
+# 冒烟脚本跑打包产物时的运行时目录，同上
+var-exe/
+
 # 打包残留
 *.stale-*
+
+# PyInstaller 中间产物（真正要交付的是 dist/PDFTool/）
+build/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 本地临时输出：调试用的二进制缓存、临时路径、测试统计与运行日志
+_gfw.json
+bt_path.txt
+collect_tmp.txt
+full_run*.txt

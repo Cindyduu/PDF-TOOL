@@ -3,8 +3,9 @@
  * 拖放区本身是个 role="button" + tabindex="0" 的容器：键盘用户按回车/空格
  * 也能打开选择框，不用先找到隐藏的 input。
  *
- * 选 1 个走老的"单个配置页"，选多个进批次页——单个文件是最高频的场景，
- * 不该为了批量把它的步骤变长。
+ * v4.0 起单文件与多文件**不再分叉**（AC-R13-N1）：两者都建批次、都进
+ * `#/prepare/:batchId`。原先「1 个走单任务配置页」的分支已删除——它会让
+ * 单文件用户跳过校验项勾选，而那正是 v4.0 新增的第一件事。
  */
 
 import { html } from '../dom.js';
@@ -67,26 +68,6 @@ export function render(container, ctx) {
     else dropzone.removeAttribute('aria-busy');
   }
 
-  async function upload(file) {
-    if (busy || !file) return;
-    clearError();
-    setBusy(true);
-    status.textContent = `正在读取并检查「${file.name}」…`;
-
-    try {
-      const job = await ctx.api.createJob(file);
-      status.textContent = `已接收「${job.original_name}」，共 ${job.source.page_count} 页`;
-      ctx.toast('文件已上传');
-      ctx.navigate(`#/config/${job.id}`);
-    } catch (error) {
-      status.textContent = '';
-      showError(error.message, error.hint);
-    } finally {
-      setBusy(false);
-      input.value = '';
-    }
-  }
-
   async function uploadBatch(files) {
     if (busy || !files.length) return;
     clearError();
@@ -101,7 +82,12 @@ export function render(container, ctx) {
         ? `已接收 ${accepted} 个文件，${rejected} 个未通过检查`
         : `已接收 ${accepted} 个文件`;
       ctx.toast(rejected ? `${rejected} 个文件未通过检查` : '文件已上传');
-      ctx.navigate(`#/batch/${payload.batch_id}`);
+      // 一个文件都没有被接收时留在首页：跳过去只会看到一个空批次
+      if (!accepted) {
+        showError('这些文件都没能通过检查', '请换一个 PDF 文件后重试');
+        return;
+      }
+      ctx.navigate(`#/prepare/${payload.batch_id}`);
     } catch (error) {
       status.textContent = '';
       showError(error.message, error.hint);
@@ -121,8 +107,7 @@ export function render(container, ctx) {
       );
       return;
     }
-    if (files.length === 1) upload(files[0]);
-    else uploadBatch(files);
+    uploadBatch(files);
   }
 
   dropzone.addEventListener('click', () => {

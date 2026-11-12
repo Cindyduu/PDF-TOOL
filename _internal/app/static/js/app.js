@@ -10,14 +10,34 @@ import { createRouter, navigate } from './router.js';
 import * as backup from './views/backup.js';
 import * as batch from './views/batch.js';
 import * as config from './views/config.js';
+import * as done from './views/done.js';
 import * as history from './views/history.js';
 import * as home from './views/home.js';
+import * as prepare from './views/prepare.js';
+import * as process from './views/process.js';
 import * as processing from './views/processing.js';
 import * as result from './views/result.js';
+import * as verify from './views/verify.js';
 
-const VIEWS = { home, config, batch, processing, result, history, backup };
+const VIEWS = {
+  home,
+  prepare,
+  verify,
+  process,
+  done,
+  config,
+  batch,
+  processing,
+  result,
+  history,
+  backup,
+};
 const TITLES = {
   home: '上传文件',
+  prepare: '准备校验',
+  verify: '校验结果',
+  process: '自动处理',
+  done: '处理结果与后置校验',
   config: '处理配置',
   batch: '批量处理',
   processing: '处理中',

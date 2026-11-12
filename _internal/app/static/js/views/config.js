@@ -1,12 +1,18 @@
-/* 配置页：确认文件信息、选标签处理方式、填豁免页码，然后开始处理。
+/* 单任务配置页（历史入口）`#/config/:jobId`。
  *
- * "开始处理"会先保存再入队：用户改完页码直接点开始是常态，
- * 如果只入队不保存，页面上填的东西就会被悄悄丢掉。
+ * v4.0 起新流程不再经过这里（上传统一进准备页），这个页面只从「历史」进入，
+ * 用来给一个已存在的任务改豁免页、决定要不要跳过前置校验。
+ *
+ * v4.0 删掉的东西（R30）：标签检测结果卡片、标签处理方式四选一、
+ * 「重新检测标签」按钮。标签相关字段仍然留在老 job.json 里，但这里
+ * 既不读也不写——AC-R30-E1 要求代码里不再有 `tag_choice` 的读写。
  */
 
-import { badge, formatSize, formatTime, html, raw } from '../dom.js';
+import { badge, formatSize, formatTime, html } from '../dom.js';
 
 const TERMINAL = ['completed', 'completed_with_warnings', 'failed', 'interrupted'];
+const VERIFYING = ['verify_queued', 'verifying'];
+const PROCESSING = ['queued', 'running', 'process_queued', 'processing', 'post_verifying'];
 
 export async function render(container, ctx) {
   const jobId = ctx.params.jobId;
@@ -27,9 +33,18 @@ export async function render(container, ctx) {
     return;
   }
 
-  // 已经开始或已经结束的任务不该停在配置页——刷新到这里时直接送走
-  if (job.status === 'queued' || job.status === 'running') {
-    ctx.navigate(`#/processing/${jobId}`);
+  // 已经开始或已经结束的任务不该停在配置页——刷新到这里时直接送到对应页面。
+  // 送去哪一页由状态决定：校验中/校验完/处理中各有各的落脚点。
+  if (VERIFYING.includes(job.status)) {
+    ctx.navigate(`#/verify/${job.batch_id}`);
+    return;
+  }
+  if (job.status === 'verified') {
+    ctx.navigate(`#/process/${job.batch_id}`);
+    return;
+  }
+  if (PROCESSING.includes(job.status)) {
+    ctx.navigate(`#/done/${job.batch_id}`);
     return;
   }
   if (TERMINAL.includes(job.status)) {
@@ -38,39 +53,7 @@ export async function render(container, ctx) {
   }
 
   const meta = ctx.meta;
-  const detection = job.tag_detection || {};
   const config = job.config || {};
-  const detectionLabel = meta.tag_status_labels[detection.status] || detection.status;
-  const detectionTone =
-    detection.status === 'detection_failed'
-      ? 'danger'
-      : detection.status === 'tagged'
-        ? 'ok'
-        : 'warn';
-
-  const choices = raw(
-    (meta.tag_choices || [])
-      .map((choice) => {
-        const checked = config.tag_choice === choice ? 'checked' : '';
-        const id = `tag-choice-${choice}`;
-        return html`
-          <div class="option">
-            <input
-              type="radio"
-              id="${id}"
-              name="tag-choice"
-              value="${choice}"
-              ${raw(checked)}
-            />
-            <label for="${id}">
-              ${meta.tag_choice_labels[choice] || choice}
-              ${choiceHint(choice)}
-            </label>
-          </div>
-        `;
-      })
-      .join(''),
-  );
 
   container.innerHTML = html`
     <div class="card-head">
@@ -95,29 +78,7 @@ export async function render(container, ctx) {
     </section>
 
     <section class="card">
-      <h2>标签检测结果</h2>
-      <p>
-        ${badge({ icon: '•', label: detectionLabel, tone: detectionTone })}
-      </p>
-      <dl class="kv small">
-        <dt>结构树</dt><dd>${detection.has_struct_tree ? '存在' : '不存在'}</dd>
-        <dt>标记位</dt><dd>${detection.has_markinfo ? '存在' : '不存在'}</dd>
-        <dt>父树</dt><dd>${detection.parent_tree_ok ? '正常' : '缺失或不完整'}</dd>
-        <dt>内容标记数</dt><dd>${detection.mcid_count ?? 0}</dd>
-      </dl>
-      <p class="hint">${detection.message || '检测只做判断，不会修改文件。'}</p>
-      <div class="btn-row">
-        <button type="button" class="btn" id="retry-detect">重新检测标签</button>
-      </div>
-      <p id="detect-note" class="hint" aria-live="polite"></p>
-    </section>
-
-    <section class="card">
       <h2>处理设置</h2>
-      <fieldset>
-        <legend>标签处理方式</legend>
-        ${choices}
-      </fieldset>
 
       <label class="field" for="exempt-pages">豁免页码</label>
       <input
@@ -132,6 +93,21 @@ export async function render(container, ctx) {
         这些页不做注释展平与缩放继承。留空表示不豁免。支持 1-3、8 这样的写法。
       </p>
 
+      <div class="option">
+        <input
+          type="checkbox"
+          id="skip-precheck"
+          name="skip-precheck"
+          ${config.skip_precheck ? 'checked' : ''}
+        />
+        <label for="skip-precheck">
+          不执行前置校验，直接处理
+          <span class="hint">
+            勾选后跳过校验直接开始；无论勾不勾，处理完成后都会自动跑一遍后置校验。
+          </span>
+        </label>
+      </div>
+
       <p id="config-error" class="error" role="alert"></p>
 
       <div class="btn-row">
@@ -145,11 +121,10 @@ export async function render(container, ctx) {
 
   const errorBox = container.querySelector('#config-error');
   const note = container.querySelector('#config-note');
-  const detectNote = container.querySelector('#detect-note');
   const startButton = container.querySelector('#start-job');
   const saveButton = container.querySelector('#save-config');
-  const retryButton = container.querySelector('#retry-detect');
   const exemptInput = container.querySelector('#exempt-pages');
+  const skipBox = container.querySelector('#skip-precheck');
 
   function showError(error) {
     errorBox.textContent = [error.message, error.hint].filter(Boolean).join('｜');
@@ -159,25 +134,22 @@ export async function render(container, ctx) {
     errorBox.textContent = '';
   }
 
-  function selectedChoice() {
-    const checked = container.querySelector('input[name="tag-choice"]:checked');
-    return checked ? checked.value : null;
-  }
-
   function setBusy(busy) {
-    [startButton, saveButton, retryButton].forEach((button) => {
+    [startButton, saveButton].forEach((button) => {
       button.disabled = busy;
     });
     exemptInput.disabled = busy;
+    skipBox.disabled = busy;
   }
 
   async function save({ silent = false } = {}) {
     const updated = await ctx.api.updateConfig(jobId, {
       exempt_pages_raw: exemptInput.value,
-      tag_choice: selectedChoice(),
+      skip_precheck: skipBox.checked,
     });
     job = updated;
     exemptInput.value = updated.config.exempt_pages_raw || '';
+    skipBox.checked = Boolean(updated.config.skip_precheck);
     if (!silent) {
       const pages = updated.config.exempt_pages || [];
       note.textContent = pages.length
@@ -208,37 +180,11 @@ export async function render(container, ctx) {
     try {
       await save({ silent: true });
       await ctx.api.startJob(jobId);
-      ctx.navigate(`#/processing/${jobId}`);
+      ctx.navigate(`#/done/${job.batch_id}`);
     } catch (error) {
       showError(error);
     } finally {
       setBusy(false);
     }
   });
-
-  retryButton.addEventListener('click', async () => {
-    clearError();
-    detectNote.textContent = '正在重新检测…';
-    setBusy(true);
-    try {
-      await ctx.api.retryTagDetection(jobId);
-      detectNote.textContent = '已重新检测，正在刷新页面…';
-      ctx.refresh();
-    } catch (error) {
-      detectNote.textContent = '';
-      showError(error);
-    } finally {
-      setBusy(false);
-    }
-  });
-}
-
-function choiceHint(choice) {
-  const hints = {
-    generate: html`<span class="hint">为没有标签的文件建立结构树</span>`,
-    skip: html`<span class="hint">完全不改动标签相关结构</span>`,
-    keep: html`<span class="hint">保留文件里已有的标签</span>`,
-    regenerate: html`<span class="hint">丢掉现有结构后重建（仅标记位的情况）</span>`,
-  };
-  return hints[choice] || '';
 }

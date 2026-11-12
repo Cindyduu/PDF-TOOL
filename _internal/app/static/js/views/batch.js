@@ -1,27 +1,34 @@
-/* 批次页：一批文件放在一张表里，统一配置、一起开始、各自出结果。
+/* 批次页（v2.1 遗留入口）`#/batch/:batchId`。
  *
- * 三条原则：
- * - **状态只信后端**：表格内容全部来自 `GET /api/jobs/batch/{id}`，
- *   刷新页面不会丢进度，也不会出现"界面说完成了但文件还没发布"；
- * - **不阻塞**：某个文件失败只在它自己那一行标红，其他行照常推进；
- * - **离开就停**：轮询定时器在视图清理时关掉，切页之后不再打接口。
+ * v4.0 的动线改成了 prepare → verify → process → done，这一页不再是必经之路，
+ * 但旧书签、旧链接还会指过来，所以保留：统一设置 + 一张状态表。
+ *
+ * v4.0 删掉的东西（R30）：标签处理方式单选组、「标签状态」列、
+ * 「重新检测标签」。标签字段留在老 job.json 里，这里既不读也不写。
  */
 
 import { badge, formatTime, html, raw } from '../dom.js';
 
 const TERMINAL = ['completed', 'completed_with_warnings', 'failed', 'interrupted'];
-const ACTIVE = ['queued', 'running'];
-const CONFIGURABLE = ['configuring', 'awaiting_tag_decision'];
+/** 还在跑的六个状态：校验两个 + 处理四个。 */
+const ACTIVE = ['verify_queued', 'verifying', 'queued', 'running', 'process_queued', 'processing', 'post_verifying'];
+const CONFIGURABLE = ['configuring'];
 
 const TONES = {
   configuring: 'info',
-  awaiting_tag_decision: 'warn',
+  verify_queued: 'neutral',
+  verifying: 'info',
+  verified: 'ok',
   queued: 'neutral',
   running: 'info',
+  process_queued: 'neutral',
+  processing: 'info',
+  post_verifying: 'info',
   completed: 'ok',
   completed_with_warnings: 'warn',
   failed: 'danger',
   interrupted: 'danger',
+  awaiting_tag_decision: 'warn',
 };
 
 const POLL_MS = 1200;
@@ -49,25 +56,6 @@ export async function render(container, ctx) {
 
   let jobs = payload.jobs || [];
 
-  const choices = raw(
-    [
-      html`<div class="option">
-        <input type="radio" id="batch-tag-default" name="batch-tag-choice" value="" checked />
-        <label for="batch-tag-default">
-          沿用各文件的默认选择
-          <span class="hint">每个文件按自己的标签检测结果走，推荐</span>
-        </label>
-      </div>`,
-      ...(meta.tag_choices || []).map((choice) => {
-        const id = `batch-tag-${choice}`;
-        return html`<div class="option">
-          <input type="radio" id="${id}" name="batch-tag-choice" value="${choice}" />
-          <label for="${id}">${meta.tag_choice_labels[choice] || choice}</label>
-        </div>`;
-      }),
-    ].join(''),
-  );
-
   container.innerHTML = html`
     <h1>批量处理</h1>
     <p class="muted">
@@ -76,10 +64,6 @@ export async function render(container, ctx) {
 
     <section class="card">
       <h2>统一设置</h2>
-      <fieldset>
-        <legend>标签处理方式</legend>
-        ${choices}
-      </fieldset>
 
       <label class="field" for="batch-exempt">豁免页码</label>
       <input
@@ -130,23 +114,18 @@ export async function render(container, ctx) {
     errorBox.textContent = '';
   }
 
-  function selectedChoice() {
-    const checked = container.querySelector('input[name="batch-tag-choice"]:checked');
-    return checked ? checked.value : '';
-  }
-
-  function tagLabel(job) {
-    const status = job.tag_detection?.status;
-    return meta.tag_status_labels[status] || status || '—';
-  }
-
   function actionsFor(job) {
     const id = job.id;
+    const batchId = job.batch_id;
     const parts = [];
     if (CONFIGURABLE.includes(job.status)) {
       parts.push(html`<a class="btn small" href="#/config/${id}">单独配置</a>`);
     } else if (ACTIVE.includes(job.status)) {
-      parts.push(html`<a class="btn small" href="#/processing/${id}">查看进度</a>`);
+      // 校验阶段和处理阶段各有各的页面，去错了看不到进度
+      const target = ['verify_queued', 'verifying'].includes(job.status)
+        ? `#/verify/${batchId}`
+        : `#/done/${batchId}`;
+      parts.push(html`<a class="btn small" href="${target}">查看进度</a>`);
     } else {
       parts.push(html`<a class="btn small" href="#/result/${id}">查看结果</a>`);
     }
@@ -180,7 +159,6 @@ export async function render(container, ctx) {
                 <span class="hint">${job.id}</span>
               </th>
               <td class="small">${pageCount} 页</td>
-              <td class="small">${tagLabel(job)}</td>
               <td>
                 ${badge({
                   icon: meta.job_status_icons[job.status] || '•',
@@ -207,7 +185,6 @@ export async function render(container, ctx) {
             <tr>
               <th scope="col">文件</th>
               <th scope="col">页数</th>
-              <th scope="col">标签状态</th>
               <th scope="col">处理状态</th>
               <th scope="col">上传时间</th>
               <th scope="col">操作</th>
@@ -269,9 +246,6 @@ export async function render(container, ctx) {
     applyButton.disabled = true;
     try {
       const patch = { exempt_pages_raw: exemptInput.value };
-      const choice = selectedChoice();
-      if (choice) patch.tag_choice = choice;
-
       const result = await ctx.api.patchBatchConfig(batchId, patch);
       const updated = (result.updated || []).length;
       const invalid = (result.invalid || []).length;

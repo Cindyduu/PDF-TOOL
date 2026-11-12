@@ -17,9 +17,10 @@ pydantic        2.14.2          MIT
 
 随附许可证文件：
   licenses\PyMuPDF-COPYING
+  licenses\pikepdf-LICENSE.txt
+  licenses\FastAPI-LICENSE
+  licenses\uvicorn-LICENSE.md
+  licenses\pydantic-LICENSE
 
-未随 wheel 提供许可证原文的组件：
-  pikepdf         10.17.0：wheel 内未附许可证文件，需按 https://github.com/pikepdf/pikepdf 自行补齐
-  FastAPI         0.162.0：wheel 内未附许可证文件，需按 https://github.com/fastapi/fastapi 自行补齐
-  uvicorn         0.54.0：wheel 内未附许可证文件，需按 https://github.com/encode/uvicorn 自行补齐
-  pydantic        2.14.2：wheel 内未附许可证文件，需按 https://github.com/pydantic/pydantic 自行补齐
+许可证原文未随 wheel 完整提供的组件（分发前需自行补齐）：
+  PyMuPDF         1.26.4：wheel 只附了声明（PyMuPDF-COPYING），许可证全文需按 https://github.com/pymupdf/PyMuPDF 另行补齐

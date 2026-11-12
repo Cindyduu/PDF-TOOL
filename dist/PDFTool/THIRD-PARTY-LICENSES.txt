@@ -1,0 +1,26 @@
+PDF 自动设置工具 —— 第三方组件许可证清单
+
+本程序在本地处理 PDF 文件，使用了下列第三方组件。
+各组件的许可证原文见本文件末尾列出的 licenses\ 目录。
+
+组件            版本            许可证
+--------------  --------------  ----------------
+PyMuPDF         1.26.4          AGPL-3.0
+pikepdf         10.17.0         MPL-2.0
+qpdf            随 pikepdf       Apache-2.0
+FastAPI         0.162.0         MIT
+uvicorn         0.54.0          BSD-3-Clause
+pydantic        2.14.2          MIT
+
+注意：PyMuPDF 以 AGPL-3.0 授权。若要在不分发源码的前提下分发本程序的二进制，
+需自行评估 AGPL 义务（或向 Artifex 购买商业许可）。
+
+随附许可证文件：
+  licenses\PyMuPDF-COPYING
+  licenses\pikepdf-LICENSE.txt
+  licenses\FastAPI-LICENSE
+  licenses\uvicorn-LICENSE.md
+  licenses\pydantic-LICENSE
+
+许可证原文未随 wheel 完整提供的组件（分发前需自行补齐）：
+  PyMuPDF         1.26.4：wheel 只附了声明（PyMuPDF-COPYING），许可证全文需按 https://github.com/pymupdf/PyMuPDF 另行补齐

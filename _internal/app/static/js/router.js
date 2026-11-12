@@ -8,6 +8,12 @@
 
 export const ROUTES = [
   { name: 'home', pattern: /^\/home\/?$/ },
+  // v4.0 四步动线：准备 → 校验 → 处理 → 结果。四条路由全部挂在批次号上，
+  // 因为「两阶段共用同一批已上传文件」是 R13 的硬约束（不重复上传）。
+  { name: 'prepare', pattern: /^\/prepare\/([^/]+)\/?$/, keys: ['batchId'] },
+  { name: 'verify', pattern: /^\/verify\/([^/]+)\/?$/, keys: ['batchId'] },
+  { name: 'process', pattern: /^\/process\/([^/]+)\/?$/, keys: ['batchId'] },
+  { name: 'done', pattern: /^\/done\/([^/]+)\/?$/, keys: ['batchId'] },
   { name: 'config', pattern: /^\/config\/([^/]+)\/?$/, keys: ['jobId'] },
   { name: 'batch', pattern: /^\/batch\/([^/]+)\/?$/, keys: ['batchId'] },
   { name: 'processing', pattern: /^\/processing\/([^/]+)\/?$/, keys: ['jobId'] },

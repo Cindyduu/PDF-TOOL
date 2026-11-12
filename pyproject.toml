@@ -1,0 +1,36 @@
+[project]
+name = "pdf-ectd-tool"
+version = "0.1.0"
+description = "本地 PDF 自动设置工具（eCTD 提交前处理）"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.162.0",
+    "uvicorn==0.54.0",
+    "PyMuPDF==1.26.4",
+    "pikepdf==10.17.0",
+    "python-multipart",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+    "httpx==0.28.1",
+    "playwright==1.64.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "e2e: 浏览器端到端测试（需要 Playwright Chromium）",
+    "slow: 较慢的测试",
+]
+# 单条用例超过 5 分钟就打印所有线程的堆栈。项目没装 pytest-timeout，
+# 一旦某条用例卡在等网络/等浏览器上，全量跑就会无声无息地挂住——之前
+# 真遇到过，只能靠反复分组二分才定位。faulthandler 是 pytest 自带的，
+# 不杀进程、不加依赖，只把"卡在哪一行"打出来。
+# 5 分钟这个值远大于任何单条用例的正常耗时（最慢的 e2e 约 60 秒）。
+faulthandler_timeout = 300
+
+[tool.setuptools.packages.find]
+include = ["app*"]

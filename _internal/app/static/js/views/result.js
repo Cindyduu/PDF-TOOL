@@ -1,4 +1,4 @@
-/* 结果页：九项处理逐行摊开，before / after / counts / reason / next_action 都在。
+/* 结果页：十项处理逐行摊开，before / after / counts / reason / next_action 都在。
  *
  * 预览失败只提示、不禁用下载：浏览器内嵌 PDF 预览依赖插件，
  * 有时候明明文件是好的也打不开，这时候拦住下载只会让人以为文件坏了。
@@ -135,6 +135,8 @@ export async function render(container, ctx) {
       </dl>
     </section>
 
+    ${contentIntegrityCard(report)}
+
     <section class="card">
       <div class="btn-row">
         ${output
@@ -160,11 +162,11 @@ export async function render(container, ctx) {
     ${viewAudit}
 
     <section class="card">
-      <h2>九项处理明细</h2>
+      <h2>十项处理明细</h2>
       <div class="table-wrap">
         <table id="result-table">
           <caption class="visually-hidden">
-            九项处理的逐项结果
+            十项处理的逐项结果
           </caption>
           <thead>
             <tr>
@@ -192,6 +194,8 @@ export async function render(container, ctx) {
           </section>
         `
       : ''}
+
+    ${postVerifyCard(report.post_verify, meta)}
 
     <p class="hint" id="disclaimer">${report.disclaimer || ''}</p>
   `;
@@ -260,6 +264,11 @@ export async function render(container, ctx) {
       reprocessButton.disabled = false;
     }
   });
+
+  // 单文件的后置校验报告。没有后置校验时按钮不存在，这里也就不会绑上。
+  container.querySelector('#open-verify-report')?.addEventListener('click', () => {
+    window.open(ctx.api.jobVerifyReportHtmlUrl(jobId, 'post'), '_blank');
+  });
 }
 
 function formatCounts(counts, meta) {
@@ -268,6 +277,150 @@ function formatCounts(counts, meta) {
     .filter((key) => Number(counts[key]) > 0)
     .map((key) => `${meta.count_labels[key] || key} ${counts[key]}`);
   return parts.length ? parts.join('，') : '—';
+}
+
+/* R36 内容一致性：这一张卡回答「工具只改了格式，还是也动了内容」。
+ *
+ * 结论文案直接用后端给的 `content_integrity_summary`，前端不重算。那句话由
+ * `content_fingerprint.describe_integrity` 生成，处理日志用的是同一个函数——
+ * 两边各算一遍，迟早会出现「日志说 3 页变化、结果页说 2 页」，而且没人能说清
+ * 哪个对。
+ *
+ * 没有 `content_integrity`（老任务，或护栏在建指纹前就抛了）时照样出这张卡，
+ * 写「未核对」。这一行的存在本身就是结论：用户需要知道**这件事没被验证过**，
+ * 而不是从「没有这一行」去猜它验过了（AC-R36-E2）。
+ */
+function contentIntegrityCard(report) {
+  const data = report.content_integrity;
+  const summary = report.content_integrity_summary || '内容一致性未核对';
+  const rows = [];
+  if (data) {
+    const counts = data.page_count || {};
+    if (counts.before !== undefined && counts.before !== null) {
+      rows.push(['页数', `${counts.before} → ${counts.after}`]);
+    }
+    const changed = data.changed_pages || {};
+    if ((changed.content || []).length) rows.push(['内容流变化页', pageList(changed.content)]);
+    if ((changed.text || []).length) rows.push(['文本层变化页', pageList(changed.text)]);
+    if ((data.attributed_to || []).length) rows.push(['归因到', data.attributed_to.join('、')]);
+    if ((data.problems || []).length) rows.push(['问题', data.problems.join('；')]);
+  }
+
+  // 三态而不是两态：`null` 是「没核对」，不是「一致」。把它染成绿色等于
+  // 替用户下了一个工具没做过的结论。
+  const tone = data ? (data.ok === false ? 'danger' : 'ok') : 'warn';
+  const label = data ? (data.ok === false ? '不一致' : '一致') : '未核对';
+  const icon = data ? (data.ok === false ? '✗' : '✓') : '—';
+
+  return html`
+    <section class="card" id="content-integrity">
+      <div class="card-head">
+        <h2>内容一致性</h2>
+        ${badge({ icon, label, tone })}
+      </div>
+      <p id="content-integrity-summary">${summary}</p>
+      ${rows.length
+        ? html`<dl class="kv small">
+            ${raw(rows.map(([name, value]) => html`<dt>${name}</dt><dd>${value}</dd>`).join(''))}
+          </dl>`
+        : ''}
+      <p class="hint">
+        处理前后各算一次内容指纹（页数、尺寸、图片、字体、文本层、内容流）。
+        差异必须能归因到已勾选的处理项，归不了因就判为改动了内容。
+      </p>
+    </section>
+  `;
+}
+
+function pageList(pages, limit = 10) {
+  const shown = pages.slice(0, limit).join('、');
+  return pages.length > limit ? `${shown} 等 ${pages.length} 页` : shown;
+}
+
+/* 后置校验卡片（R27）。
+ *
+ * 与「十项处理明细」分开两张表：一张说"我改了什么"，一张说"改完还合不合规"，
+ * 混在一张表里用户会拿处理结果当校验结论读。
+ *
+ * 固定九行：没跑到的项也占一行显示破折号，缺行会被读成"这项没问题"。
+ */
+const VERIFY_TONES = {
+  pass: 'ok',
+  warning: 'warn',
+  fail: 'danger',
+  skipped: 'neutral',
+};
+
+function postVerifyCard(postVerify, meta) {
+  if (!postVerify) {
+    return html`
+      <section class="card" id="post-verify">
+        <h2>后置校验</h2>
+        <p class="muted">这个文件没有后置校验结果（处理没有走到那一步）。</p>
+      </section>
+    `;
+  }
+
+  const summary = postVerify.summary || {};
+  const rows = raw(
+    (meta.verify_keys || [])
+      .map((key, index) => {
+        const item = (postVerify.items || []).find((entry) => entry.key === key);
+        const title = meta.verify_titles?.[key] || key;
+        if (!item) {
+          return html`<tr data-key="${key}">
+            <th scope="row">${index + 1}. ${title}</th>
+            <td>${badge({ icon: '—', label: '—', tone: 'neutral' })}</td>
+            <td class="small">本次未执行</td>
+          </tr>`;
+        }
+        const status = item.status;
+        return html`<tr data-key="${key}">
+          <th scope="row">${index + 1}. ${title}</th>
+          <td>
+            ${badge({
+              icon: meta.verify_status_icons?.[status] || '•',
+              label: meta.verify_status_labels?.[status] || status,
+              tone: VERIFY_TONES[status] || 'neutral',
+            })}
+          </td>
+          <td class="small">${item.summary || (status === 'skipped' ? '本次未执行' : '—')}</td>
+        </tr>`;
+      })
+      .join(''),
+  );
+
+  return html`
+    <section class="card" id="post-verify">
+      <div class="card-head">
+        <h2>后置校验</h2>
+        <button type="button" class="btn small" id="open-verify-report">校验报告</button>
+      </div>
+      <p class="hint">
+        处理完成之后自动重跑一遍十二项检查。校验结论只说明文件当前状态，
+        不代表已通过任何官方审评。
+      </p>
+      <div class="table-wrap">
+        <table>
+          <caption class="visually-hidden">处理之后的十二项校验</caption>
+          <thead>
+            <tr>
+              <th scope="col">校验项</th>
+              <th scope="col">结果</th>
+              <th scope="col">说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      </div>
+      <p class="hint">
+        通过 ${summary.pass ?? 0} 项 · 预警 ${summary.warning ?? 0} 项 · 不通过
+        ${summary.fail ?? 0} 项 · 未执行 ${summary.skipped ?? 0} 项
+      </p>
+    </section>
+  `;
 }
 
 /* 「初始视图核对」卡片。
