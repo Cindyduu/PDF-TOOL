@@ -2036,7 +2036,7 @@ python scripts/verify_content_same.py 原件目录 产物目录 --json 复核报
 | M10-3 | 结果页提示强化（R43） | `app/static/js/views/result.js` | AC-R43-N1…N3 全通过 | ✅ 六态提示 + 徽标口径统一，node 真跑 9 例 |
 | M10-4 | 文档同步 | `使用说明.txt`、`docs/使用说明.txt`、`var/验收样本/对照表.txt` | 说明「怎么自证只改格式」，脚本用法一行 | ✅ 两份说明 byte-identical（13741 字节） |
 | M10-5 | 回归 | 全量 `pytest tests` | 全绿，无新增 skip | ✅ 1865 收集 / 1861 passed / 4 skipped，exit 0 |
-| M10-6 | 打包与工具入口 | `scripts/build.ps1`、`dist/PDFTool/` | 冒烟 exit=0；全绿后**先询问用户**，同意再打包并生成对话内入口 | ⏸ 待用户确认 |
+| M10-6 | 打包与分享包 | `scripts/build.ps1`、`dist/PDFTool/`、`dist/PDFTool-v4.4.zip` | 冒烟 exit=0；全绿后**先询问用户**，同意再打包 | ✅ 构建 exit=0（308.1 MB / 335 文件）；冒烟源码态与打包态均 exit=0，日志归一化后 diff=0（57 行）；zip 47.5 MB / 343 条目，`testzip()` 无坏块 |
 
 M10 落地要点：
 
@@ -2052,6 +2052,14 @@ M10 落地要点：
   | 2 | 卡死 21m | playwright 浏览器进程不响应（环境瞬时） | 清残留进程，`tests/e2e` 单跑 37 项全绿 |
   | 3 | 卡死 21m | 自己新写的 node 子进程管道 EOF 死锁（§19.7） | 改输出落文件 + `timeout` |
   | 4 | **exit=0，11m18s** | — | 全绿 |
+
+- **M10-6** 用户先选「先自己验收，暂不打包」，验收后要求生成分享包。产物与校验：
+  - `build.ps1` 自检通过（主程序 / 静态资源 / 许可证清单 / 许可证目录 / 使用说明），
+    产物内 `使用说明.txt` 与仓库那份 SHA256 一致，版本号 4.4；
+  - `live_smoke.py` 源码态与 `--exe` 打包态均 exit=0（五条断言全过，含「产物里 Link `/C` 全为纯蓝」「非 Link 注释数为 0」「Link 数与输入一致」）；
+  - `compare_smoke_logs.py` 归一化后逐字一致（57 行，仅排除启动方式 / generation_id / job id / 端口）——证明打包没有改变行为；
+  - `dist/PDFTool-v4.4.zip` 47.5 MB / 343 条目，顶层只有 `PDFTool\` 一个目录（解压不会散落一地），
+    `zipfile.testzip()` 返回 None（无 CRC 坏块）。
 
   三次都没有删测试、没有 skip、没有降低断言强度；改的是产品代码的并发缺陷与取子进程输出的方式，
   验收断言一条未动。
