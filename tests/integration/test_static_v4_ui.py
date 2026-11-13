@@ -11,13 +11,19 @@ M4 只动前端。这里不去点按钮（Playwright 留给 M6-3），而是把�
 5. 处理页与结果页不再出现 tagged_pdf 相关字样（AC-R30-N2），
    且没有任何 `tag_choice` 的读写（AC-R30-E1）；
 6. 页面 4 的后置校验固定九行，缺项写「本次未执行」而不是让行消失；
-7. 免责声明在结果页上，且界面不出现「完全合规」这类结论性表述（AC-R23-E2）。
+7. 免责声明在结果页上，且界面不出现「完全合规」这类结论性表述（AC-R23-E2）；
+8. 「内容一致性」提示按六态给结论，且「没核对」「没算成」两态必须劝阻（R43）。
+   这一组不查字符串：把 `result.js` 里的函数抠出来交给 node 真跑，才能证明
+   `ok=true` + `warning` 不会渲染成绿色的「一致」——那是本轮修掉的假绿灯。
 """
 
 from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -245,13 +251,268 @@ def test_result_page_shows_the_content_integrity_verdict() -> None:
     """
     source = read("js/views/result.js")
     assert 'id="content-integrity"' in source
-    assert "contentIntegrityCard(report)" in source
+    assert "contentIntegrityCard(report, meta)" in source
     assert "report.content_integrity_summary" in source
     assert "内容一致性未核对" in source
 
 
 # --------------------------------------------------------------------------- #
-# 6. 免责声明与结论性表述
+# 6. R43：内容一致性提示的六态（AC-R43-N1…N4）
+#
+# 这一组不查字符串，而是把 result.js 里的函数抠出来交给 node 真跑一遍：
+# 「文案里有没有『不要』」用 grep 能查，「`ok=true` + `warning` 会不会渲染成
+# 绿色的一致」只有真执行才查得出来——那正是本轮补上的假绿灯。
+# --------------------------------------------------------------------------- #
+
+NODE = shutil.which("node")
+
+needs_node = pytest.mark.skipif(
+    NODE is None, reason="需要 node 执行前端函数（本机 v22；缺 node 时跳过而不是假装通过）"
+)
+
+META = {
+    "operation_titles": {
+        "remove_annotations": "清除高亮和批注",
+        "link_color": "内链颜色修正",
+    }
+}
+
+# node 侧的最小夹具：读入函数源码与用例，逐条求值后把结果吐成 JSON。
+# 用 `new Function` 而不是 `import`，因为 result.js 顶部 import 了 `../dom.js`
+# 与 `../save-as.js`，那两个模块会碰 `document`，在 node 里跑不起来。
+HARNESS = """
+import fs from 'node:fs';
+
+const { body, meta, cases } = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const factory = new Function(
+  `${body}\\nreturn { integrityState, integrityBadge, contentIntegrityNotice };`
+);
+const api = factory();
+const out = cases.map((report) => ({
+  state: api.integrityState(report.content_integrity),
+  badge: api.integrityBadge(report.content_integrity),
+  text: api.contentIntegrityNotice(report, meta),
+}));
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def js_function(source: str, name: str) -> str:
+    """从源码里按大括号配对抠出 `function name(...) {...}`。
+
+    不用正则：模板字符串里的 `${...}` 和正文里的 `{}` 会让贪婪匹配跑飞。
+    函数被改名或删掉时这里抛 ValueError，测试红——这正是想要的失败方式。
+    """
+    marker = f"function {name}("
+    start = source.index(marker)
+    depth = 0
+    opened = False
+    for index in range(start, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+            opened = True
+        elif char == "}":
+            depth -= 1
+            if opened and depth == 0:
+                return source[start : index + 1]
+    raise ValueError(f"{name} 的函数体没有闭合")
+
+
+def run_notice(cases: list[dict], meta: dict | None = None) -> list[dict]:
+    """把用例交给 node 求值，返回每条用例的 state / badge / text。
+
+    输出**落文件**再读回来，不用 `capture_output`：Windows 上管道写端一旦被别的
+    长命子进程继承，`communicate()` 就等不到 EOF，node 早已退出 pytest 还在等。
+    全量跑时前面有 live server 与 playwright 的残留子进程，这个坑真实发生过——
+    这个文件单跑 15 秒全绿，塞进全量就卡在一个 0.3 秒的用例上。
+    """
+    source = read("js/views/result.js")
+    body = "\n".join(
+        js_function(source, name)
+        for name in ("pageList", "integrityState", "integrityBadge", "attributedText", "contentIntegrityNotice")
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        harness = Path(tmp) / "harness.mjs"
+        payload = Path(tmp) / "cases.json"
+        out_path = Path(tmp) / "stdout.txt"
+        err_path = Path(tmp) / "stderr.txt"
+        harness.write_text(HARNESS, "utf-8")
+        payload.write_text(
+            json.dumps(
+                {"body": body, "meta": META if meta is None else meta, "cases": cases},
+                ensure_ascii=False,
+            ),
+            "utf-8",
+        )
+        with open(out_path, "wb") as out, open(err_path, "wb") as err:
+            code = subprocess.run(
+                [NODE, str(harness), str(payload)],
+                stdout=out,
+                stderr=err,
+                timeout=120,
+            ).returncode
+        stdout = out_path.read_text("utf-8", errors="replace")
+        stderr = err_path.read_text("utf-8", errors="replace")
+    assert code == 0, stderr
+    return json.loads(stdout)
+
+
+@needs_node
+def test_notice_warns_when_integrity_was_never_checked() -> None:
+    """`content_integrity` 为 `null`：必须劝阻，不能说「一致」。"""
+    [result] = run_notice([{"content_integrity": None}])
+    assert result["state"] == "missing"
+    assert result["badge"]["label"] == "未核对"
+    assert "不要" in result["text"]
+    assert "没有核对" in result["text"]
+
+
+@needs_node
+def test_notice_warns_when_the_verdict_is_a_failure() -> None:
+    """`ok=false`：产物没发布，必须劝阻。"""
+    [result] = run_notice(
+        [{"content_integrity": {"ok": False, "problems": ["页数变化：3 → 4"]}}]
+    )
+    assert result["state"] == "bad"
+    assert result["badge"] == {"tone": "danger", "label": "不一致", "icon": "✗"}
+    assert "不要" in result["text"]
+    assert "没有发布" in result["text"]
+
+
+@needs_node
+def test_notice_warns_when_the_fingerprint_could_not_be_computed() -> None:
+    """回归：`ok=true` + `warning`（指纹没算成）不许渲染成「一致」。
+
+    `content_fingerprint.compare()` 在指纹出错时返回 `ok=True` + `warning`，
+    只看 `ok` 会走到最后一个分支说「处理前后内容一致」——一个字都没比过却给
+    绿灯。这条用例就是钉住这个假绿灯。
+    """
+    warning = "内容一致性未能核对（指纹计算失败：broken xref）"
+    [result] = run_notice([{"content_integrity": {"ok": True, "warning": warning}}])
+    assert result["state"] == "unknown"
+    assert result["badge"]["label"] == "未核对"
+    assert result["badge"]["tone"] == "warn"
+    assert "不要" in result["text"]
+    assert "指纹计算失败" in result["text"]
+    assert "处理前后内容一致" not in result["text"]
+
+
+@needs_node
+def test_notice_explains_an_attributable_text_change() -> None:
+    """文本层有变化：报页号、报中文处理项名，不报英文键。"""
+    [result] = run_notice(
+        [
+            {
+                "content_integrity": {
+                    "ok": True,
+                    "changed_pages": {"content": [2, 5], "text": [2, 5]},
+                    "attributed_to": ["remove_annotations"],
+                }
+            }
+        ]
+    )
+    assert result["state"] == "good"
+    assert "2、5" in result["text"]
+    assert "文字层" in result["text"]
+    assert "清除高亮和批注" in result["text"]
+    assert "remove_annotations" not in result["text"]
+
+
+@needs_node
+def test_notice_explains_a_paint_only_change() -> None:
+    """只有内容流变、文字没变：必须说清「文字一字未改」，否则用户会当成内容被改。"""
+    [result] = run_notice(
+        [
+            {
+                "content_integrity": {
+                    "ok": True,
+                    "changed_pages": {"content": [3], "text": []},
+                    "attributed_to": ["link_color"],
+                }
+            }
+        ]
+    )
+    assert result["state"] == "good"
+    assert "一字未改" in result["text"]
+    assert "3" in result["text"]
+    assert "内链颜色修正" in result["text"]
+
+
+@needs_node
+def test_notice_says_identical_only_when_nothing_changed() -> None:
+    [result] = run_notice(
+        [
+            {
+                "content_integrity": {
+                    "ok": True,
+                    "page_count": {"before": 3, "after": 3},
+                    "changed_pages": {"content": [], "text": []},
+                    "attributed_to": [],
+                }
+            }
+        ]
+    )
+    assert result["state"] == "good"
+    assert "内容一致" in result["text"]
+    assert "不要" not in result["text"]
+
+
+@needs_node
+def test_notice_truncates_long_page_lists() -> None:
+    """页号多到十几个时不能把整行撑爆——沿用 `pageList` 的截断。"""
+    [result] = run_notice(
+        [
+            {
+                "content_integrity": {
+                    "ok": True,
+                    "changed_pages": {"content": [], "text": list(range(1, 13))},
+                    "attributed_to": ["remove_annotations"],
+                }
+            }
+        ]
+    )
+    assert "等 12 页" in result["text"]
+
+
+@needs_node
+def test_notice_falls_back_to_the_raw_key_without_titles() -> None:
+    """`/api/meta` 没给 `operation_titles` 时退回键名，不许整句消失。"""
+    [result] = run_notice(
+        [
+            {
+                "content_integrity": {
+                    "ok": True,
+                    "changed_pages": {"content": [1], "text": []},
+                    "attributed_to": ["link_color"],
+                }
+            }
+        ],
+        meta={},
+    )
+    assert "link_color" in result["text"]
+
+
+def test_content_integrity_card_keeps_every_row() -> None:
+    """AC-R43-N3：加提示不许删信息；AC-R43-N2：提示不读 `content_integrity_summary`。"""
+    source = read("js/views/result.js")
+    assert 'id="content-integrity-summary"' in source
+    assert 'id="content-integrity-notice"' in source
+    for row in ("页数", "内容流变化页", "文本层变化页", "归因到", "问题"):
+        assert f"'{row}'" in source, f"卡片少了「{row}」这一行"
+    notice = js_function(source, "contentIntegrityNotice")
+    assert "content_integrity_summary" not in notice, "提示句不许复述后端结论（会变成两套账）"
+    assert "integrityState" in notice, "提示与徽标必须共用同一套状态判定"
+
+
+def test_result_page_points_at_the_independent_checker() -> None:
+    """AC-R42-N6 的前端一半：结果页要给出独立复核的入口。"""
+    source = read("js/views/result.js")
+    assert "scripts/verify_content_same.py" in source
+
+
+# --------------------------------------------------------------------------- #
+# 7. 免责声明与结论性表述
 # --------------------------------------------------------------------------- #
 
 
@@ -274,7 +535,7 @@ def test_result_page_says_verification_is_not_official_approval() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 7. 页面 4 的数据源：/api/jobs/batch/{id}/results
+# 8. 页面 4 的数据源：/api/jobs/batch/{id}/results
 # --------------------------------------------------------------------------- #
 
 
@@ -365,7 +626,7 @@ def test_batch_results_is_404_for_an_unknown_batch(client):
 
 
 # --------------------------------------------------------------------------- #
-# 8. AC-R30-E1 的后端侧：配置补丁不再接受 tag_choice
+# 9. AC-R30-E1 的后端侧：配置补丁不再接受 tag_choice
 # --------------------------------------------------------------------------- #
 
 

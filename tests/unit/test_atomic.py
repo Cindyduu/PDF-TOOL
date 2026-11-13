@@ -138,8 +138,8 @@ def test_replace_gives_up_after_bounded_retries(
     target = tmp_path / "job.json"
     atomic_write_json(target, {"v": "old"})
 
-    monkeypatch.setattr(atomic, "_REPLACE_INITIAL_DELAY", 0.001)
-    monkeypatch.setattr(atomic, "_REPLACE_MAX_DELAY", 0.002)
+    monkeypatch.setattr(atomic, "_DENIED_INITIAL_DELAY", 0.001)
+    monkeypatch.setattr(atomic, "_DENIED_MAX_DELAY", 0.002)
 
     calls = {"n": 0}
 
@@ -152,10 +152,76 @@ def test_replace_gives_up_after_bounded_retries(
         atomic_write_json(target, {"v": "new"})
     monkeypatch.undo()
 
-    assert calls["n"] == atomic._REPLACE_ATTEMPTS, "重试次数没有上限"
+    assert calls["n"] == atomic._DENIED_ATTEMPTS, "重试次数没有上限"
     assert read_json(target) == {"v": "old"}, "失败时旧内容被破坏了"
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".job.json.")]
     assert leftovers == [], "失败后残留临时文件"
+
+
+def test_read_json_retries_when_the_writer_is_mid_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """读方也要重试：写方 os.replace 的那一瞬间，读方 open 会被拒绝。
+
+    Windows 上共享冲突是双向的——`os.replace` 要求目标上没有别的句柄，而目标处于
+    「删除挂起」时 `open()` 同样拿 WinError 5。只给写方加 `replace_with_retry`
+    等于只堵了一半：HTTP 线程轮询 `job.json` 时 worker 正在写，轮询那一侧直接
+    500，前端拿不到批次状态。
+
+    真实失败现场（v4.4 全量回归）：`GET /api/jobs/batch/...` 抛
+    `PermissionError: [Errno 13] ... job.json`，页面停在「校验完成」，
+    `#start-process` 永远不出现。
+    """
+    target = tmp_path / "job.json"
+    atomic_write_json(target, {"v": "done"})
+
+    monkeypatch.setattr(atomic, "_DENIED_INITIAL_DELAY", 0.001)
+    monkeypatch.setattr(atomic, "_DENIED_MAX_DELAY", 0.002)
+
+    real_open = open
+    calls = {"n": 0}
+
+    def flaky_open(file, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] <= 3:  # 前三次正好撞上写方替换
+            raise PermissionError(13, "拒绝访问。")
+        return real_open(file, *args, **kwargs)
+
+    # 注入模块级 `open`，只影响 atomic 内部的读取；不动全局 builtins
+    monkeypatch.setattr(atomic, "open", flaky_open, raising=False)
+    assert atomic.read_json(target) == {"v": "done"}
+    monkeypatch.undo()
+
+    assert calls["n"] == 4, "没有重试：撞到一次写方替换就放弃了"
+
+
+def test_read_json_gives_up_after_bounded_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """一直读不到时必须抛异常，不能把「读不到」降级成「没有这份文件」。
+
+    `_read_job` 传的是 `default=None`。如果权限问题被 default 吞掉，接口会回答
+    「任务不存在」——真问题（杀毒软件锁文件、ACL 错误）被 404 掩盖，现场再也
+    查不出来。
+    """
+    target = tmp_path / "job.json"
+    atomic_write_json(target, {"v": "old"})
+
+    monkeypatch.setattr(atomic, "_DENIED_INITIAL_DELAY", 0.001)
+    monkeypatch.setattr(atomic, "_DENIED_MAX_DELAY", 0.002)
+
+    calls = {"n": 0}
+
+    def always_denied(file, *args, **kwargs):
+        calls["n"] += 1
+        raise PermissionError(13, "拒绝访问。")
+
+    monkeypatch.setattr(atomic, "open", always_denied, raising=False)
+    with pytest.raises(PermissionError):
+        atomic.read_json(target, default=None)
+    monkeypatch.undo()
+
+    assert calls["n"] == atomic._DENIED_ATTEMPTS, "重试次数没有上限"
 
 
 def test_replace_with_retry_is_public() -> None:
@@ -179,8 +245,8 @@ def test_pipeline_commit_survives_a_transient_lock(
     """
     from app.pdf import pipeline
 
-    monkeypatch.setattr(atomic, "_REPLACE_INITIAL_DELAY", 0.001)
-    monkeypatch.setattr(atomic, "_REPLACE_MAX_DELAY", 0.002)
+    monkeypatch.setattr(atomic, "_DENIED_INITIAL_DELAY", 0.001)
+    monkeypatch.setattr(atomic, "_DENIED_MAX_DELAY", 0.002)
 
     target = tmp_path / "candidate.pdf"
     target.write_bytes(b"%PDF-1.7 old")

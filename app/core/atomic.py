@@ -84,9 +84,42 @@ def _write_tmp(target: Path, data: bytes) -> Path:
 
 # 重试参数：读方通常只持有句柄几毫秒，10ms 起退避足够跨过；
 # 上限 15 次、单次最长 100ms，最坏总耗时约 1.2s，不至于让写方长期卡住。
-_REPLACE_ATTEMPTS = 15
-_REPLACE_INITIAL_DELAY = 0.01
-_REPLACE_MAX_DELAY = 0.1
+# 命名用「被拒绝」而不是「替换」：写方 `os.replace` 和读方 `open` 在 Windows 上
+# 会撞上同一条共享冲突（见 `_retry_denied`），两边共用这一套退避。
+_DENIED_ATTEMPTS = 15
+_DENIED_INITIAL_DELAY = 0.01
+_DENIED_MAX_DELAY = 0.1
+
+
+def _retry_denied(action: Callable[[], Any]) -> Any:
+    """执行 `action`，遇到 `PermissionError` 短暂退避重试。
+
+    Windows 上「有人正打开着这个文件」会让**两侧**都拿到 `WinError 5`：
+
+    - 写方：`os.replace` 走 `MoveFileEx(REPLACE_EXISTING)`，目标上有任何不带
+      `FILE_SHARE_DELETE` 的句柄就拒绝；
+    - 读方：写方正处于替换的那一瞬间，目标处于「删除挂起」状态，此时 `open()`
+      同样可能被拒绝。Python 的 `open()` 不带 `FILE_SHARE_DELETE`，所以它既会
+      挡住写方，也会被写方挡住。
+
+    只修写方（`replace_with_retry`）是不够的：本工具天生双线程，HTTP 线程轮询
+    `job.json` 时 worker 正在写同一个文件，轮询那一侧会直接 500，前端拿不到批次
+    状态，表现为「页面卡住、处理按钮不出现」——用户看到的现象跟并发毫无关系。
+    所以读方也要重试。
+
+    重试用尽仍失败就如实抛出，不假装文件不存在：把「读不到」降级成「没有这份
+    任务」会让 404 顶替掉真正的环境问题（杀毒软件锁文件、ACL 错误），更难排查。
+    """
+    delay = _DENIED_INITIAL_DELAY
+    for attempt in range(1, _DENIED_ATTEMPTS + 1):
+        try:
+            return action()
+        except PermissionError:
+            if attempt == _DENIED_ATTEMPTS:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, _DENIED_MAX_DELAY)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def replace_with_retry(tmp: Path, target: Path) -> None:
@@ -109,16 +142,7 @@ def replace_with_retry(tmp: Path, target: Path) -> None:
     往往正被解析器、杀毒软件或资源管理器索引器短暂持有，直接 `os.replace`
     就会整项失败。所以它是公开的，全项目替换文件的唯一入口。
     """
-    delay = _REPLACE_INITIAL_DELAY
-    for attempt in range(1, _REPLACE_ATTEMPTS + 1):
-        try:
-            os.replace(tmp, target)
-            return
-        except PermissionError:
-            if attempt == _REPLACE_ATTEMPTS:
-                raise
-            time.sleep(delay)
-            delay = min(delay * 2, _REPLACE_MAX_DELAY)
+    _retry_denied(lambda: os.replace(tmp, target))
 
 
 def atomic_write_bytes(
@@ -237,18 +261,25 @@ def read_json(path: Path | str, default: Any = _UNSET) -> Any:
 
     - 文件不存在：给了 default 就返回 default，否则抛 FileNotFoundError；
     - 内容损坏：给了 default 就返回 default（让调用方走"重建/降级"路径），
-      否则抛 JSONDecodeError。
+      否则抛 JSONDecodeError；
+    - 正被别的线程替换：退避重试，跨过那一瞬间（见 `_retry_denied`）。
 
     显式传 default 即表示"这份文件损坏可容忍"，这样单个坏文件不会拖垮整张列表。
+    注意「可容忍」只覆盖**内容坏了**，不覆盖**读不到**：权限问题仍然抛异常，
+    否则一次文件锁就会被伪装成「这份任务不存在」。
     """
     target = Path(path)
     if not target.is_file():
         if default is _UNSET:
             raise FileNotFoundError(target)
         return default
-    try:
+
+    def _load() -> Any:
         with open(target, "rb") as handle:
             return json.loads(handle.read().decode("utf-8"))
+
+    try:
+        return _retry_denied(_load)
     except (json.JSONDecodeError, UnicodeDecodeError):
         if default is _UNSET:
             raise

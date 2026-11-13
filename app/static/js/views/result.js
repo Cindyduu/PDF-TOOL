@@ -135,7 +135,7 @@ export async function render(container, ctx) {
       </dl>
     </section>
 
-    ${contentIntegrityCard(report)}
+    ${contentIntegrityCard(report, meta)}
 
     <section class="card">
       <div class="btn-row">
@@ -279,6 +279,74 @@ function formatCounts(counts, meta) {
   return parts.length ? parts.join('，') : '—';
 }
 
+/* R43：卡片上的徽标只说「一致 / 不一致 / 未核对」，用户读完仍不知道自己能不能
+ * 拿这份文件去申报。这里补一句**结论式**的话，并给出独立复核的入口。
+ *
+ * 只做文案映射，不重算结论：页数、变化页号、归因全部读后端给的
+ * `report.content_integrity`；结论文案本身仍以 `content_integrity_summary`
+ * 为唯一来源（§R28 一份数据源），这里不去复述它，只解释「这对你意味着什么」。
+ *
+ * 三种「不算一致」的状态必须劝阻：`ok=false`、`missing`（没核对）、
+ * `unknown`（想核对但没核对成）。把「没核对」写得好听，等于替用户下了一个
+ * 工具没做过的结论——申报材料被退回时，他不会记得这一行当时写的是什么。
+ *
+ * 为什么要分 `missing` 和 `unknown` 两态：`ok` 只有真/假两种取值，但
+ * `compare()` 在指纹算不出来时返回的是 `ok=true` + `warning`（它故意不阻断
+ * 处理）。只看 `ok`，这一态会被渲染成绿色的「一致」，而实际上一个字都没比过。
+ * 假绿灯比红灯糟得多。
+ */
+function integrityState(data) {
+  if (!data) return 'missing';
+  if (data.warning) return 'unknown';
+  return data.ok === false ? 'bad' : 'good';
+}
+
+/* 徽标与提示句必须同源（都走 `integrityState`）：徽标写「一致」而提示写
+ * 「没核对成」，用户会去信那个绿色的。`missing` 与 `unknown` 都不是「一致」。
+ */
+function integrityBadge(data) {
+  return {
+    good: { tone: 'ok', label: '一致', icon: '✓' },
+    bad: { tone: 'danger', label: '不一致', icon: '✗' },
+    missing: { tone: 'warn', label: '未核对', icon: '—' },
+    unknown: { tone: 'warn', label: '未核对', icon: '—' },
+  }[integrityState(data)];
+}
+
+/* 归因里存的是处理项的英文键（`remove_annotations`、`link_color`），直接摊在
+ * 屏幕上等于没解释。中文名从 `/api/meta` 的 `operation_titles` 取，取不到就
+ * 退回键名——宁可难看，也不能因为少一条映射就整句消失。
+ */
+function attributedText(data, meta) {
+  const titles = (meta && meta.operation_titles) || {};
+  return (data.attributed_to || []).map((key) => titles[key] || key).join('、');
+}
+
+function contentIntegrityNotice(report, meta) {
+  const data = report.content_integrity;
+  const state = integrityState(data);
+  if (state === 'missing') {
+    return '本次没有核对内容一致性。请不要仅凭本页结论提交申报，先按下面的方法自己比对一遍。';
+  }
+  if (state === 'unknown') {
+    return `${data.warning}。不要仅凭本页结论提交申报，请按下面的方法自己比对一遍。`;
+  }
+  if (state === 'bad') {
+    return '处理前后的内容不一致，产物没有发布。不要把它用于申报，请把这份结果和原因代码一起反馈。';
+  }
+  const changed = data.changed_pages || {};
+  const textPages = changed.text || [];
+  const contentPages = changed.content || [];
+  const attributed = attributedText(data, meta) || '已勾选的处理项';
+  if (textPages.length) {
+    return `文字层在第 ${pageList(textPages)} 页有变化（来自「${attributed}」）。这是注释处理带来的预期变化，申报前建议抽查这几页。`;
+  }
+  if (contentPages.length) {
+    return `文字一字未改；第 ${pageList(contentPages)} 页的页面绘制指令有变化（来自「${attributed}」）。这是外观层面的改动，不影响内容。`;
+  }
+  return '处理前后内容一致：页数、尺寸、文字、图片、字体均未改变，本次只改格式相关结构。';
+}
+
 /* R36 内容一致性：这一张卡回答「工具只改了格式，还是也动了内容」。
  *
  * 结论文案直接用后端给的 `content_integrity_summary`，前端不重算。那句话由
@@ -290,7 +358,7 @@ function formatCounts(counts, meta) {
  * 写「未核对」。这一行的存在本身就是结论：用户需要知道**这件事没被验证过**，
  * 而不是从「没有这一行」去猜它验过了（AC-R36-E2）。
  */
-function contentIntegrityCard(report) {
+function contentIntegrityCard(report, meta) {
   const data = report.content_integrity;
   const summary = report.content_integrity_summary || '内容一致性未核对';
   const rows = [];
@@ -302,15 +370,13 @@ function contentIntegrityCard(report) {
     const changed = data.changed_pages || {};
     if ((changed.content || []).length) rows.push(['内容流变化页', pageList(changed.content)]);
     if ((changed.text || []).length) rows.push(['文本层变化页', pageList(changed.text)]);
-    if ((data.attributed_to || []).length) rows.push(['归因到', data.attributed_to.join('、')]);
+    if ((data.attributed_to || []).length) rows.push(['归因到', attributedText(data, meta)]);
     if ((data.problems || []).length) rows.push(['问题', data.problems.join('；')]);
   }
 
-  // 三态而不是两态：`null` 是「没核对」，不是「一致」。把它染成绿色等于
-  // 替用户下了一个工具没做过的结论。
-  const tone = data ? (data.ok === false ? 'danger' : 'ok') : 'warn';
-  const label = data ? (data.ok === false ? '不一致' : '一致') : '未核对';
-  const icon = data ? (data.ok === false ? '✗' : '✓') : '—';
+  // 徽标与提示句必须同源（都走 `integrityState`）：徽标写「一致」而提示写
+  // 「没核对成」，用户会去信那个绿色的。`missing` 与 `unknown` 都不是「一致」。
+  const { tone, label, icon } = integrityBadge(data);
 
   return html`
     <section class="card" id="content-integrity">
@@ -319,6 +385,7 @@ function contentIntegrityCard(report) {
         ${badge({ icon, label, tone })}
       </div>
       <p id="content-integrity-summary">${summary}</p>
+      <p class="notice" id="content-integrity-notice">${contentIntegrityNotice(report)}</p>
       ${rows.length
         ? html`<dl class="kv small">
             ${raw(rows.map(([name, value]) => html`<dt>${name}</dt><dd>${value}</dd>`).join(''))}
@@ -327,6 +394,11 @@ function contentIntegrityCard(report) {
       <p class="hint">
         处理前后各算一次内容指纹（页数、尺寸、图片、字体、文本层、内容流）。
         差异必须能归因到已勾选的处理项，归不了因就判为改动了内容。
+      </p>
+      <p class="hint">
+        要自己复核：把原件和产物各放一个目录，运行
+        <code>python scripts/verify_content_same.py 原件目录 产物目录</code>
+        —— 它不复用本工具的判断逻辑，会重新提取文字、尺寸、图片、字体再比一遍。
       </p>
     </section>
   `;
